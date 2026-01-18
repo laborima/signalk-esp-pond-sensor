@@ -6,7 +6,8 @@
 #include <DallasTemperature.h>
 #include <Wire.h>
 #include <BH1750.h>
-#include <Adafruit_BMP280.h> // CAPTEUR PRESSURE/TEMP AIR
+#include <Adafruit_BMP280.h>   // BMP280 (air temp + pressure)
+// #include <Adafruit_BME280.h> // ← option humidité
 #include "config.h"
 
 /* ================= TFT ================= */
@@ -30,18 +31,15 @@ DallasTemperature sensors(&oneWire);
 
 /* ================= I2C ================= */
 BH1750 lightMeter;
-Adafruit_BMP280 bmp; // CAPTEUR AIR
+Adafruit_BMP280 bmp;   // BMP280 air
 
 /* ================= NETWORK ================= */
 WiFiClient espClient;
 PubSubClient mqtt(espClient);
 
-/* ================= UI ================= */
-unsigned long lastAnim = 0;
-int fishX = 10;
-int fishDir = 1;
-
 /* ================= UTILS ================= */
+float toKelvin(float c) { return c + 273.15f; }
+
 uint16_t colorByRange(float v, float min, float max) {
   if (v < min || v > max) return ST77XX_RED;
   if (v < min + (max-min)*0.2 || v > max - (max-min)*0.2) return ST77XX_ORANGE;
@@ -49,28 +47,20 @@ uint16_t colorByRange(float v, float min, float max) {
 }
 
 /* ================= ULTRASON ================= */
-float readUltrason() {
+float readUltrasonCm() {
   digitalWrite(TRIG_PIN, LOW); delayMicroseconds(2);
   digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
   long d = pulseIn(ECHO_PIN, HIGH, 30000);
-  return d * 0.034 / 2;
+  return d > 0 ? d * 0.034f / 2.0f : -1;
 }
 
-float mapFloat(float value, float inMin, float inMax, float outMin, float outMax) {
-  if (inMax <= inMin) {
-    return outMin;
-  }
-  return (value - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
-}
-
+/* ================= DRAW ================= */
 void drawBar(int x, int y, int w, float v, float min, float max) {
   int maxFill = w - 2;
-  int bw = (int)constrain(mapFloat(v, min, max, 0, (float)maxFill), 0.0f, (float)maxFill);
+  int bw = constrain((int)((v - min) * maxFill / (max - min)), 0, maxFill);
   tft.drawRect(x, y, w, 6, ST77XX_WHITE);
-  if (bw > 0) {
-    tft.fillRect(x + 1, y + 1, bw, 4, colorByRange(v, min, max));
-  }
+  if (bw > 0) tft.fillRect(x + 1, y + 1, bw, 4, colorByRange(v, min, max));
 }
 
 uint16_t globalFishColor(float t, float ph, float ec) {
@@ -87,6 +77,16 @@ void drawFish(int x, int y, uint16_t c) {
   tft.fillCircle(x+3, y-3, 2, ST77XX_BLACK);
 }
 
+/* ================= MQTT ================= */
+void ensureMqtt() {
+  while (!mqtt.connected()) {
+    if (mqtt.connect(DEVICE_NAME)) {
+      Serial.println("MQTT connected");
+    } else {
+      delay(2000);
+    }
+  }
+}
 
 /* ================= SETUP ================= */
 void setup() {
@@ -100,8 +100,8 @@ void setup() {
   Wire.begin();
   lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
 
-  if (!bmp.begin(0x76)) { // Adresse I2C BMP280
-    Serial.println("BMP280 non detecte !");
+  if (!bmp.begin(0x76)) {
+    Serial.println("BMP280 non detecte");
   }
 
   pinMode(TRIG_PIN, OUTPUT);
@@ -115,36 +115,35 @@ void setup() {
 
 /* ================= LOOP ================= */
 void loop() {
-  if (!mqtt.connected()) mqtt.connect(DEVICE_NAME);
+  ensureMqtt();
   mqtt.loop();
 
   sensors.requestTemperatures();
-  float temp1 = sensors.getTempCByIndex(0);
-  float temp2 = sensors.getTempCByIndex(1);
-  float tempAvg = (temp1 + temp2) / 2.0f;
-  float ph   = (analogRead(PH_PIN)/4095.0)*14.0;
-  float ec   = (analogRead(EC_PIN)/4095.0)*2000.0;
-  float lux  = lightMeter.readLightLevel();
-  float lvl  = readUltrason();
+  float t1 = sensors.getTempCByIndex(0);
+  float t2 = sensors.getTempCByIndex(1);
+  float tAvg = (t1 + t2) / 2.0f;
 
-  float airT = bmp.readTemperature();
-  float press = bmp.readPressure()/100.0F;
+  float ph  = analogRead(PH_PIN) / 4095.0f * 14.0f;
+  float ec  = analogRead(EC_PIN) / 4095.0f * 2000.0f;
+  float lux = lightMeter.readLightLevel();
+  float lvl = readUltrasonCm();
 
+  float airC = bmp.readTemperature();
+  float airK = toKelvin(airC);
+  float pressPa = bmp.readPressure();
+
+  /* ===== TFT ===== */
   tft.fillScreen(ST77XX_BLACK);
-
-  // HEADER
   tft.setTextSize(2);
   tft.setCursor(5,5);
-  tft.setTextColor(ST77XX_WHITE);
-  tft.print("AQUAPONIE");
+  tft.print("POND");
 
   tft.setTextSize(1);
   tft.drawFastHLine(0,28,160,ST77XX_BLUE);
 
-  // WATER
   tft.setCursor(5,32); tft.print("Eau");
-  tft.setCursor(5,44); tft.printf("T1 %.1f T2 %.1f", temp1, temp2);
-  drawBar(60,56,60,tempAvg,18,28);
+  tft.setCursor(5,44); tft.printf("T %.1f/%.1f", t1, t2);
+  drawBar(60,56,60,tAvg,18,28);
 
   tft.setCursor(5,68); tft.printf("pH %.2f", ph);
   drawBar(60,68,60,ph,6.2,7.2);
@@ -152,31 +151,31 @@ void loop() {
   tft.setCursor(5,80); tft.printf("EC %.0f", ec);
   drawBar(60,80,60,ec,500,1500);
 
-  // ENV
   tft.setCursor(5,92); tft.printf("Lux %.0f", lux);
   tft.setCursor(5,104); tft.printf("Niv %.1fcm", lvl);
+  tft.setCursor(5,116); tft.printf("Air %.1fC", airC);
 
-  tft.setCursor(5,116);
-  tft.printf("Air %.1fC %dhPa", airT, (int)press);
+  drawFish(135, 82, globalFishColor(tAvg, ph, ec));
 
-  // FISH
-  uint16_t fishColor = globalFishColor(tempAvg, ph, ec);
-  drawFish(135, 82, fishColor);
+  /* ===== SignalK Delta ===== */
+  String delta =
+    "{"
+      "\"context\":\"vessels.self\","
+      "\"updates\":[{"
+        "\"source\":{\"label\":\"esp32-pond\",\"type\":\"sensor\"},"
+        "\"values\":["
+          "{\"path\":\"environment/inside/pond/water/temperature\",\"value\":" + String(toKelvin(tAvg)) + "},"
+          "{\"path\":\"environment/inside/pond/water/ph\",\"value\":" + String(ph) + "},"
+          "{\"path\":\"environment/inside/pond/water/conductivity\",\"value\":" + String(ec) + "},"
+          "{\"path\":\"environment/inside/pond/water/level\",\"value\":" + String(lvl / 100.0f) + "},"
+          "{\"path\":\"environment/inside/pond/light/level\",\"value\":" + String(lux) + "},"
+          "{\"path\":\"environment/inside/pond/air/temperature\",\"value\":" + String(airK) + "},"
+          "{\"path\":\"environment/inside/pond/air/pressure\",\"value\":" + String(pressPa) + "}"
+        "]"
+      "}]"
+    "}";
 
-  // MQTT
-  String payload =
-    "{\"temp_water\":"+String(tempAvg)+
-    ",\"temp_water_1\":"+String(temp1)+
-    ",\"temp_water_2\":"+String(temp2)+
-    ",\"ph\":"+String(ph)+
-    ",\"ec\":"+String(ec)+
-    ",\"lux\":"+String(lux)+
-    ",\"level\":"+String(lvl)+
-    ",\"temp_air\":"+String(airT)+
-    ",\"pressure\":"+String(press)+"}";
-
-  mqtt.publish("sensors/bassin/data", payload.c_str());
+  mqtt.publish("signalk/delta", delta.c_str());
 
   delay(2000);
 }
-
