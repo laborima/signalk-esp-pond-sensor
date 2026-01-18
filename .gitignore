@@ -1,0 +1,21 @@
+# Local configuration
+config.h
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Arduino IDE
+build/
+*.bin
+*.elf
+*.hex
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
