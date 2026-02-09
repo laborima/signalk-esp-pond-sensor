@@ -1,0 +1,120 @@
+@import "tailwindcss";
+
+:root {
+  --background: #F4F1DE;
+  --foreground: #2F3E46;
+  
+  --poi-terra: #E07A5F;
+  --poi-coral: #f1a387;
+  --poi-sun: #F2CC8F;
+  --poi-bark: #8B4513;
+  --poi-ocean: #3D405B;
+  --poi-sage: #81B29A;
+  --poi-sand: #F4F1DE;
+  --poi-surface: #FFFFFF;
+  --poi-text: #2F3E46;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  
+  --color-poi-terra: #E07A5F;
+  --color-poi-coral: #f1a387;
+  --color-poi-sun: #F2CC8F;
+  --color-poi-bark: #8B4513;
+  --color-poi-ocean: #3D405B;
+  --color-poi-sage: #81B29A;
+  --color-poi-sand: #F4F1DE;
+  --color-poi-surface: #FFFFFF;
+  --color-poi-text: #2F3E46;
+  
+  --radius-poi-lg: 24px;
+  --radius-poi-md: 12px;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+@keyframes wave1 {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(-25px); }
+}
+
+@keyframes wave2 {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(25px); }
+}
+
+@keyframes wave3 {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(-15px); }
+}
+
+@keyframes bubble {
+  0% {
+    opacity: 0.8;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-100px) scale(0.5);
+  }
+}
+
+@keyframes swim {
+  0%, 100% {
+    transform: translateX(0) translateY(0) rotate(0deg);
+  }
+  25% {
+    transform: translateX(10px) translateY(-5px) rotate(2deg);
+  }
+  50% {
+    transform: translateX(0) translateY(0) rotate(0deg);
+  }
+  75% {
+    transform: translateX(-10px) translateY(5px) rotate(-2deg);
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(59, 130, 246, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.8);
+  }
+}
+
+.animate-wave1 {
+  animation: wave1 8s ease-in-out infinite;
+}
+
+.animate-wave2 {
+  animation: wave2 6s ease-in-out infinite;
+}
+
+.animate-wave3 {
+  animation: wave3 4s ease-in-out infinite;
+}
+
+.animate-bubble {
+  animation: bubble 3s ease-out forwards;
+}
+
+.animate-swim {
+  animation: swim 4s ease-in-out infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.duration-2000 {
+  transition-duration: 2000ms;
+}

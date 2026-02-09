@@ -1,4 +1,4 @@
-# Local configuration
+# Local configuration (contains WiFi/MQTT secrets)
 config.h
 
 # PlatformIO
@@ -11,6 +11,15 @@ build/
 *.bin
 *.elf
 *.hex
+
+# Node (signalk-poi-lab)
+node_modules/
+.next/
+out/
+npm-debug.log*
+.env
+.env.local
+.env.*.local
 
 # Editors
 .vscode/

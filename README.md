@@ -1,286 +1,98 @@
-# 🌿 Système de monitoring de bassin / aquaponie – ESP32
+[![License](https://img.shields.io/badge/License-Apache%202.0-brightgreen.svg)](https://opensource.org/licenses/Apache-2.0)
+[![SignalK](https://img.shields.io/badge/SignalK-integrated-blue.svg)](https://signalk.org/)
+[![ESP32](https://img.shields.io/badge/ESP32-Arduino-orange.svg)](https://www.espressif.com/)
 
-Projet DIY de supervision d’un **bassin extérieur / aquaponie / piscine naturelle**, basé sur **ESP32**, avec :
+🌍 *[Français](README.fr.md)*
 
-* affichage local sur écran TFT
-* envoi des données vers **SignalK** via Wi-Fi / MQTT
-* intégration possible avec Grafana, Home Assistant et dashboards custom
+# SignalK ESP32 Pond Sensor
 
-Le *vessel SignalK* représente la **maison** ; le bassin est isolé dans la zone
-`environment.inside.pond`.
+ESP32-based outdoor pond / aquaponics monitoring system with local TFT display and SignalK publishing via MQTT.
 
----
+This project contains two sub-projects:
 
-## 🎯 Objectifs du projet
+- **signalk_esp_pond_sensor/** — ESP32 firmware (Arduino C++)
+- **signalk-poi-lab/** — SignalK monitoring webapp (Next.js)
 
-* 📊 Mesure continue de la **qualité de l’eau**
-* 🌤️ Suivi de l’**environnement extérieur**
-* 🖥️ Affichage local lisible (maintenance terrain)
-* 🌐 Intégration réseau (SignalK / MQTT)
-* 🧱 Architecture simple, robuste et évolutive
-* 🔌 Matériel accessible et remplaçable
-
----
-
-## 🧠 Architecture générale
+## Architecture
 
 ```text
-[ Capteurs eau & air ]
-          │
-          │ (Analogique / I2C / 1-Wire)
-          ▼
-      ESP32 Dev Board
-          │
-          ├── SPI  → Écran TFT (affichage local)
-          ├── Wi-Fi → MQTT → SignalK
-          └── Alimentation 5V / 3.3V
+[ Water & air sensors ]
+        |
+        | (Analog / I2C / 1-Wire)
+        v
+    ESP32 (TTGO T-Display)
+        |
+        |-- SPI  -> TFT screen 135x240 (ST7789)
+        |-- WiFi -> MQTT -> SignalK Server
+        |                       |
+        |                       v
+        |                  signalk-poi-lab (webapp)
+        |-- Standby 20h-7h (screen off)
+        '-- Watchdog 30s
 ```
 
----
+## Sensors
 
-## 📦 Liste complète des composants
+| Sensor | Measurement | Interface |
+|--------|-------------|-----------|
+| DS18B20 x2 | Water temperature | 1-Wire (GPIO 27) |
+| pH probe | pH | Analog (GPIO 33) |
+| EC probe | Conductivity | Analog (GPIO 32) |
+| HC-SR04 | Water level | GPIO 25/26 |
+| BH1750 | Illuminance (lux) | I2C |
+| BME280/BMP280 | Air temperature, pressure | I2C |
 
-### 🔧 Unité centrale
+## SignalK Paths
 
-* **ESP32 Dev Board**
+| Measurement | Path |
+|-------------|------|
+| Water temperature (avg) | `tanks.liveWell.pond.temperature` |
+| Temperature probe 1 | `tanks.liveWell.pond1.temperature` |
+| Temperature probe 2 | `tanks.liveWell.pond2.temperature` |
+| pH | `tanks.liveWell.pond.ph` |
+| Conductivity | `tanks.liveWell.pond.conductivity` |
+| Water level | `tanks.liveWell.pond.currentLevel` |
+| Illuminance | `environment.inside.pond.illuminance` |
+| Air temperature | `environment.inside.pond.temperature` |
+| Pressure | `environment.inside.pond.pressure` |
 
-  * Wi-Fi intégré
-  * ADC 12 bits
-  * I2C / SPI / 1-Wire
-  * Faible consommation
-
----
-
-### 🖥️ Affichage
-
-* **Écran TFT SPI** (ST7735 / ST7789 recommandé)
-
-```text
-┌────────────────────────┐
-│ 🐟 POND MONITOR        │
-├────────────────────────┤
-│ 🌡 Eau  23.4°C ████    │
-│ 💧 pH   6.8   ████    │
-│ ⚡ EC   820uS ███     │
-│ ☀ Lux  12300           │
-│ 📏 Niv  32 cm           │
-│ 🌬 Air  18.5°C 1012hPa │
-├────────────────────────┤
-│        🐠              │
-└────────────────────────┘
-```
-
----
-
-### 💧 Capteurs eau
-
-| Capteur    | Paramètre mesuré                 | Signal           |
-| ---------- | -------------------------------- | ---------------- |
-| Sonde pH   | Acidité / alcalinité             | Analogique (ADC) |
-| Sonde EC   | Conductivité (sels / nutriments) | Analogique (ADC) |
-| DS18B20 x2 | Température de l’eau             | 1-Wire           |
-| HC-SR04    | Niveau d’eau                     | Numérique        |
-
----
-
-### 🌤️ Capteurs environnement
-
-| Capteur | Paramètre              | Bus |
-| ------- | ---------------------- | --- |
-| BH1750  | Luminosité (lux)       | I2C |
-| BMP280  | Pression atmosphérique | I2C |
-| BMP280  | Température air        | I2C |
-
----
-
-## 🔌 Schéma de montage
-
-Schéma fonctionnel **réaliste**, prêt pour breadboard ou carte proto.
-
-
-```text
-                 ┌─────────────────────────┐
-                 │         ESP32            │
-                 │                         │
-                 │ 3V3 ─────────┬─────────┬─────────┐
-                 │ GND ─────────┴────┬────┴────┬────┴────┐
-                 │                    │         │         │
-                 │ GPIO21 (SDA) ──────┼── BH1750│         │
-                 │ GPIO22 (SCL) ──────┼── BMP280│         │
-                 │                    │         │         │
-                 │ GPIO35 (ADC) ◄─────┼── pH    │         │
-                 │ GPIO34 (ADC) ◄─────┼── EC    │         │
-                 │                    │         │         │
-                 │ GPIO27 (1-Wire) ◄──┼── DS18B20 x2│       │
-                 │                    │         │         │
-                 │ GPIO25 ───────────►┼── Ultrason TRIG   │
-                 │ GPIO26 ◄───────────┼── Ultrason ECHO   │
-                 │                    │         │         │
-                 │ SPI ───────────────┼── TFT Écran       │
-                 │ Wi-Fi ─────────────┼── SignalK         │
-                 └─────────────────────────┘
-```
-
----
-
-## 🔋 Alimentation
-
-| Élément  | Tension | Remarque                   |
-| -------- | ------- | -------------------------- |
-| ESP32    | 5V USB  | Régulation 3.3V interne    |
-| BH1750   | 3.3V    | I2C natif                  |
-| BMP280   | 3.3V    | I2C natif                  |
-| DS18B20  | 3.3V    | Pull-up 4.7kΩ              |
-| pH       | 5V      | Sortie analogique          |
-| EC       | 5V      | Sortie analogique          |
-| Ultrason | 5V      | **ECHO à abaisser à 3.3V** |
-| TFT      | 3.3V    | SPI                        |
-
-⚠️ **Toutes les masses (GND) doivent être communes.**
-
----
-
-## 🧮 Fonctionnement logiciel
-
-### 1️⃣ Acquisition
-
-* Lecture cyclique des capteurs
-* Moyennage ADC
-* Calibration pH / EC
-* Conversion vers unités physiques
-
----
-
-### 2️⃣ Affichage local
-
-* Rafraîchissement TFT
-* Diagnostic terrain sans réseau
-
----
-
-### 3️⃣ Communication réseau
-
-* Connexion Wi-Fi
-* Publication MQTT
-* Conversion vers **SignalK Delta**
-
----
-
-## 🔗 Intégration SignalK
-
-### Zone dédiée
-
-Le bassin est isolé dans :
-
-```
-/vessels/self/environment/inside/pond
-```
-
----
-
-### Mapping SignalK
-
-| Mesure                  | Path SignalK                                 |
-| ----------------------- | -------------------------------------------- |
-| Température eau         | `environment.inside.pond.water.temperature`  |
-| Température eau sonde 1 | `environment.inside.pond.water.temperature1` |
-| Température eau sonde 2 | `environment.inside.pond.water.temperature2` |
-| pH                      | `environment.inside.pond.water.ph`           |
-| Conductivité            | `environment.inside.pond.water.conductivity` |
-| Niveau                  | `environment.inside.pond.water.level`        |
-| Luminosité              | `environment.inside.pond.light.level`        |
-| Température air         | `environment.inside.pond.air.temperature`    |
-| Pression                | `environment.inside.pond.air.pressure`       |
-| Humidité relative       | `environment.inside.pond.air.humidity`       |
-
----
-
-### Exemple **SignalK Delta** (recommandé)
-
-```json
-{
-  "context": "vessels.self",
-  "updates": [
-    {
-      "source": {
-        "label": "esp32-pond",
-        "type": "sensor"
-      },
-      "values": [
-        { "path": "environment/inside/pond/water/temperature",  "value": 291.85 },
-        { "path": "environment/inside/pond/water/temperature1", "value": 291.65 },
-        { "path": "environment/inside/pond/water/temperature2", "value": 292.05 },
-
-        { "path": "environment/inside/pond/water/ph",            "value": 7.2 },
-        { "path": "environment/inside/pond/water/conductivity", "value": 1240 },
-        { "path": "environment/inside/pond/water/level",        "value": 0.425 },
-
-        { "path": "environment/inside/pond/air/temperature",    "value": 294.45 },
-        { "path": "environment/inside/pond/air/pressure",       "value": 101640 },
-        { "path": "environment/inside/pond/air/humidity",       "value": 0.62 },
-
-        { "path": "environment/inside/pond/light/level",        "value": 18300 }
-      ]
-    }
-  ]
-}
-
-```
-
-📌 Températures en **Kelvin**, pression en **Pa** (conformité SignalK).
-
----
-
-## ⚙️ Préparation du projet
-
-### Dépendances
-
-* WiFi (ESP32 core)
-* PubSubClient
-* Adafruit GFX
-* Adafruit ST7735 / ST7789
-* OneWire
-* DallasTemperature
-* BH1750
-* Adafruit BMP280
-
----
+## Firmware Setup
 
 ### Configuration
 
 ```bash
-cp config.h.sample config.h
+cp signalk_esp_pond_sensor/config.h.sample signalk_esp_pond_sensor/config.h
 ```
+
+Edit `config.h` with your WiFi credentials and MQTT broker address:
 
 ```c
-#define WIFI_SSID   "MON_WIFI"
-#define WIFI_PASS   "MON_MDP"
-#define MQTT_HOST   "192.168.0.10"
-#define MQTT_PORT   1883
-#define DEVICE_NAME "esp32-pond-01"
+#define WIFI_SSID     "MY_WIFI"
+#define WIFI_PASS     "MY_PASSWORD"
+#define MQTT_HOST     "192.168.x.x"
+#define MQTT_PORT     1883
+#define DEVICE_NAME   "signalk-esp-pond-sensor-01"
 ```
 
-`config.h` est ignoré par Git.
+`config.h` is gitignored (contains secrets).
 
----
+### Arduino Dependencies
 
-## 🚀 Évolutions prévues
+- WiFi (ESP32 core)
+- PubSubClient
+- Adafruit GFX + Adafruit ST7789
+- OneWire + DallasTemperature
+- BH1750
+- Adafruit BME280 / BMP280
 
-* ORP / salinité
-* Alimentation solaire
-* Historisation InfluxDB
-* Alertes seuils
-* OTA firmware
+### Upload
 
----
+Flash via Arduino IDE or PlatformIO on an ESP32 (TTGO T-Display recommended).
 
-## 🧠 Philosophie
+## POI Laboratory Webapp
 
-> *Un bassin sain commence par des données fiables.*
+See [signalk-poi-lab/README.md](signalk-poi-lab/README.md).
 
-Ce projet privilégie :
+## License
 
-* la lisibilité
-* la robustesse
-* la conformité SignalK
-* la maintenabilité long terme
+Apache-2.0

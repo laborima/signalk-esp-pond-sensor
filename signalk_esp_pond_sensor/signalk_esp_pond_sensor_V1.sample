@@ -1,0 +1,245 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7789.h>  // ST7789 pour TTGO T-Display
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <Wire.h>
+#include <BH1750.h>
+#include <Adafruit_BMP280.h>
+#include "config.h"
+
+/* ================= COLORS ================= */
+#define ST77XX_NAVY      0x000F   // bleu foncé
+#define ST77XX_DARKGREY  0x7BEF   // gris foncé
+#define ST77XX_LIGHTGREY 0xC618
+
+/* ================= TFT (TTGO T-Display) ================= */
+#define TFT_MOSI  19
+#define TFT_SCLK  18
+#define TFT_CS    5
+#define TFT_DC    16
+#define TFT_RST   23
+#define TFT_BL    4
+
+Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
+
+/* ================= DS18B20 ================= */
+#define ONEWIRE_PIN 27
+OneWire oneWire(ONEWIRE_PIN);
+DallasTemperature sensors(&oneWire);
+
+/* ================= ULTRASON ================= */
+#define TRIG_PIN 25
+#define ECHO_PIN 26
+
+/* ================= ANALOG ================= */
+#define PH_PIN 35
+#define EC_PIN 34
+
+/* ================= I2C ================= */
+BH1750 lightMeter;
+Adafruit_BMP280 bmp;
+bool bmpDetected = false;
+bool bh1750Detected = false;
+
+/* ================= NETWORK ================= */
+WiFiClient espClient;
+PubSubClient mqtt(espClient);
+
+/* ================= TIMERS ================= */
+unsigned long lastScreen = 0;
+unsigned long lastMqtt   = 0;
+
+/* ================= UTILS ================= */
+float toKelvin(float c) { return c + 273.15f; }
+
+uint16_t colorByRange(float v, float min, float max) {
+  if (isnan(v)) return ST77XX_RED;
+  if (v < min || v > max) return ST77XX_RED;
+  if (v < min + (max-min)*0.2 || v > max - (max-min)*0.2) return ST77XX_ORANGE;
+  return ST77XX_GREEN;
+}
+
+float readUltrasonCm() {
+  digitalWrite(TRIG_PIN, LOW); delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long d = pulseIn(ECHO_PIN, HIGH, 30000);
+  return d > 0 ? d * 0.034f / 2.0f : NAN;
+}
+
+float safeDS18B20(uint8_t idx) {
+    float t = sensors.getTempCByIndex(idx);
+    if (t == DEVICE_DISCONNECTED_C || t < -40 || t > 125) return 0.0f;
+    return t;
+}
+
+float safeAnalog(int pin, float scale) {
+    int v = analogRead(pin);
+    if (v <= 0) return 0.0f;
+    return v / 4095.0f * scale;
+}
+
+float safeUltrason() {
+    float lvl = readUltrasonCm();
+    if (isnan(lvl)) return 0.0f;
+    return lvl;
+}
+
+/* ================= DRAW ================= */
+void drawBar(int x, int y, int w, float v, float min, float max, uint16_t bg=ST77XX_DARKGREY) {
+  tft.fillRect(x, y, w, 6, bg);
+  if (!isnan(v)) {
+    int bw = constrain((int)((v - min) * (w-2) / (max - min)), 0, w-2);
+    tft.fillRect(x+1, y+1, bw, 4, colorByRange(v, min, max));
+  }
+}
+
+uint16_t globalFishColor(float t, float ph, float ec) {
+  if (t < 18 || t > 28 || ph < 6.0 || ph > 7.5 || ec < 400 || ec > 1600)
+    return ST77XX_RED;
+  if (t < 20 || t > 26 || ph < 6.4 || ph > 7.2)
+    return ST77XX_ORANGE;
+  return ST77XX_GREEN;
+}
+
+void drawFish(int x, int y, uint16_t c) {
+  tft.fillCircle(x, y, 8, c);
+  tft.fillTriangle(x-8,y, x-16,y-6, x-16,y+6, c);
+  tft.fillCircle(x+3, y-3, 2, ST77XX_BLACK);
+}
+
+/* ================= WIFI / MQTT ================= */
+void handleWifi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[WARN] WiFi disconnected, retrying...");
+    WiFi.reconnect();
+    delay(1000);
+  }
+}
+
+void handleMqtt() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (!mqtt.connected()) mqtt.connect(DEVICE_NAME);
+  if (mqtt.connected()) mqtt.loop();
+}
+
+/* ================= SETUP ================= */
+void setup() {
+  Serial.begin(115200);
+  Serial.println("[BOOT] ESP32 starting");
+
+  // TFT
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, HIGH); // Rétro-éclairage ON
+  tft.init(135, 240);         // résolution 135x240
+  tft.setRotation(1);
+  tft.fillScreen(ST77XX_NAVY);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(10,10); tft.println("POND");
+  tft.setCursor(10,30); tft.println("MONITOR by Matthieu L.");
+  tft.setTextSize(1);
+  tft.setCursor(10,55); tft.println("Starting...");
+
+  // Capteurs
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  sensors.begin();
+  Wire.begin();
+
+  if (!lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
+    Serial.println("[BH1750] Device not detected!");
+    bh1750Detected = false;
+  } else bh1750Detected = true;
+
+  if (!bmp.begin(0x76)) {
+    Serial.println("[BMP280] Not detected");
+    bmpDetected = false;
+  } else bmpDetected = true;
+
+  // WiFi
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.print("Connecting to WiFi ");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println(" connected!");
+  tft.setCursor(10,55); tft.println("WiFi connected");
+
+  mqtt.setServer(MQTT_HOST, MQTT_PORT);
+}
+
+/* ================= LOOP ================= */
+void loop() {
+  handleWifi();
+  handleMqtt();
+
+  if (millis() - lastScreen < 2000) return;
+  lastScreen = millis();
+
+  sensors.requestTemperatures();
+  float t1 = safeDS18B20(0);
+  float t2 = safeDS18B20(1);
+  float tAvg = (t1 + t2)/2.0f;
+
+  float ph  = safeAnalog(PH_PIN, 14.0f);
+  float ec  = safeAnalog(EC_PIN, 2000.0f);
+  float lux = bh1750Detected ? lightMeter.readLightLevel() : 0.0f;
+  float lvl = safeUltrason();
+  float airC = bmpDetected ? bmp.readTemperature() : 0.0f;
+  float pressPa = bmpDetected ? bmp.readPressure() : 0.0f;
+
+  /* ===== TFT FUN DISPLAY ===== */
+  tft.fillScreen(ST77XX_NAVY);
+
+  // Title
+  tft.setTextSize(2);
+  tft.setCursor(5,5);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.print("POI Monitor @ML");
+
+  tft.setTextSize(1);
+  tft.drawFastHLine(0,28,240,ST77XX_LIGHTGREY);
+
+  // Water info
+  tft.setCursor(5,32); tft.print("Eau");
+  tft.setCursor(5,44); tft.printf("T %.1f/%.1f", t1, t2);
+  drawBar(60,56,120,tAvg,18,28);
+
+  tft.setCursor(5,68); tft.printf("pH %.2f", ph);
+  drawBar(60,68,120,ph,6.2,7.2);
+
+  tft.setCursor(5,80); tft.printf("EC %.0f", ec);
+  drawBar(60,80,120,ec,500,1500);
+
+  tft.setCursor(5,92); tft.printf("Lux %.0f", lux);
+  tft.setCursor(5,104); tft.printf("Niv %.1fcm", lvl);
+  tft.setCursor(5,116); tft.printf("Air %.1fC", airC);
+
+  // Fun fish
+  drawFish(200, 100, globalFishColor(tAvg, ph, ec));
+
+  // MQTT SignalK
+  if (mqtt.connected()) {
+    String delta =
+      "{"
+        "\"context\":\"vessels.self\","
+        "\"updates\":[{"
+          "\"source\":{\"label\":\"esp32-pond\",\"type\":\"sensor\"},"
+          "\"values\":["
+            "{\"path\":\"environment/inside/pond/water/temperature\",\"value\":" + String(tAvg) + "},"
+            "{\"path\":\"environment/inside/pond/water/ph\",\"value\":" + String(ph) + "},"
+            "{\"path\":\"environment/inside/pond/water/conductivity\",\"value\":" + String(ec) + "},"
+            "{\"path\":\"environment/inside/pond/water/level\",\"value\":" + String(lvl / 100.0f) + "},"
+            "{\"path\":\"environment/inside/pond/light/level\",\"value\":" + String(lux) + "},"
+            "{\"path\":\"environment/inside/pond/air/temperature\",\"value\":" + String(airC) + "},"
+            "{\"path\":\"environment/inside/pond/air/pressure\",\"value\":" + String(pressPa) + "}"
+          "]"
+        "}]"
+      "}";
+    mqtt.publish("signalk/delta", delta.c_str());
+  }
+}
