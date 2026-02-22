@@ -3,12 +3,14 @@
 import { useEffect, useState } from "react";
 
 /**
- * Water level card with visual gauge and alert thresholds
- * @param {number} level - Water level as ratio (0-1)
- * @param {number} alertLow - Low alert threshold ratio (default 0.3)
- * @param {number} alertHigh - High alert threshold ratio (default 0.9)
+ * Water level card with visual gauge and alert thresholds.
+ * @param {number} level - Water level as ratio (0-1), calibrated
+ * @param {number} levelCm - Water level in cm (calibrated)
+ * @param {number} maxCm - Maximum pond depth in cm
+ * @param {number} alertLow - Low alert threshold ratio (default 0.917 = 55/60)
+ * @param {number} alertHigh - High alert threshold ratio (default 1.0)
  */
-export default function WaterLevelCard({ level, alertLow = 0.3, alertHigh = 0.9 }) {
+export default function WaterLevelCard({ level, levelCm, maxCm = 60, alertLow = 0.917, alertHigh = 1.0 }) {
     const [animatedLevel, setAnimatedLevel] = useState(0);
 
     useEffect(() => {
@@ -32,16 +34,15 @@ export default function WaterLevelCard({ level, alertLow = 0.3, alertHigh = 0.9 
 
     const getStatus = () => {
         if (level === null || level === undefined || isNaN(level)) return "unknown";
-        if (level <= alertLow) return "critical-low";
-        if (level >= alertHigh) return "critical-high";
-        if (level <= alertLow + 0.1) return "warning-low";
-        if (level >= alertHigh - 0.1) return "warning-high";
+        if (level < alertLow) return "warning-low";
+        if (level < alertLow - 0.05) return "critical-low";
         return "normal";
     };
 
     const status = getStatus();
     const percentage = animatedLevel * 100;
-    const levelCm = level !== null && !isNaN(level) ? (level * 100).toFixed(0) : "--";
+    const displayCm = levelCm !== null && levelCm !== undefined ? levelCm.toFixed(1) : "--";
+    const alertLowCm = Math.round(alertLow * maxCm);
 
     const statusConfig = {
         "unknown":       { color: "text-poi-text/60", bg: "bg-poi-sand", border: "border-poi-text/20", label: "N/A" },
@@ -79,14 +80,9 @@ export default function WaterLevelCard({ level, alertLow = 0.3, alertHigh = 0.9 
                         style={{ height: `${percentage}%` }}
                     />
                     <div
-                        className="absolute left-0 right-0 border-t-2 border-dashed border-poi-terra/50"
+                        className="absolute left-0 right-0 border-t-2 border-dashed border-poi-coral/50"
                         style={{ bottom: `${alertLow * 100}%` }}
                         title="Seuil bas"
-                    />
-                    <div
-                        className="absolute left-0 right-0 border-t-2 border-dashed border-poi-coral/50"
-                        style={{ bottom: `${alertHigh * 100}%` }}
-                        title="Seuil haut"
                     />
                     <div className="absolute inset-0 flex items-center justify-center">
                         <span className="text-sm font-bold text-poi-bark/80 drop-shadow-sm">
@@ -98,25 +94,24 @@ export default function WaterLevelCard({ level, alertLow = 0.3, alertHigh = 0.9 
                 <div className="flex-1 space-y-3">
                     <div>
                         <p className={`text-3xl font-bold ${config.color}`}>
-                            {levelCm} <span className="text-lg font-normal">cm</span>
+                            {displayCm} <span className="text-lg font-normal">cm</span>
+                            <span className="text-sm font-normal text-poi-text/40"> / {maxCm}</span>
                         </p>
                     </div>
                     <div className="space-y-1 text-xs text-poi-text/60">
                         <div className="flex items-center gap-2">
-                            <span className="w-3 h-0.5 bg-poi-terra/50 border-t border-dashed border-poi-terra/50"></span>
-                            Alerte basse: {(alertLow * 100).toFixed(0)} cm
+                            <span className="w-3 h-0.5 bg-poi-coral/50 border-t border-dashed border-poi-coral/50"></span>
+                            Alerte basse: {alertLowCm} cm
                         </div>
                         <div className="flex items-center gap-2">
-                            <span className="w-3 h-0.5 bg-poi-coral/50 border-t border-dashed border-poi-coral/50"></span>
-                            Alerte haute: {(alertHigh * 100).toFixed(0)} cm
+                            <span className="w-3 h-0.5 bg-poi-ocean/50"></span>
+                            Max: {maxCm} cm
                         </div>
                     </div>
                     {isAlert && (
                         <p className={`text-sm font-medium ${config.color}`}>
                             {status === "critical-low" && "Remplissage nécessaire !"}
-                            {status === "warning-low" && "Surveiller le niveau"}
-                            {status === "warning-high" && "Niveau élevé"}
-                            {status === "critical-high" && "Risque de débordement !"}
+                            {status === "warning-low" && "Niveau bas, surveiller"}
                         </p>
                     )}
                 </div>

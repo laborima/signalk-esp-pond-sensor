@@ -16,6 +16,29 @@ const getSignalKBaseUrl = () => {
     return window.location.origin;
 };
 
+/* ================= WATER LEVEL CALIBRATION ================= */
+/* Ultrasonic sensor mounted ~60cm above pond bottom.
+ * Raw SignalK value = distance_cm / 100 from firmware.
+ * At max water: sensor reads ~5.99 (distance to bottom through water).
+ * Pond depth ~60cm. Low alert at 5cm below max. */
+const WATER_LEVEL_SENSOR_MAX = 5.99;
+const WATER_LEVEL_SENSOR_MIN = 0.0;
+const WATER_LEVEL_DEPTH_CM = 60;
+
+/**
+ * Converts raw SignalK water level value to calibrated data.
+ * @param {number} rawValue - Raw value from SignalK (distance/100)
+ * @returns {{ percent: number, cm: number }} Calibrated level
+ */
+const calibrateWaterLevel = (rawValue) => {
+    if (rawValue === null || rawValue === undefined || isNaN(rawValue)) {
+        return { percent: null, cm: null };
+    }
+    const ratio = Math.max(0, Math.min(1, rawValue / WATER_LEVEL_SENSOR_MAX));
+    const cm = ratio * WATER_LEVEL_DEPTH_CM;
+    return { percent: ratio, cm: Math.round(cm * 10) / 10 };
+};
+
 const normalizeHumidityPercent = (humidity) => {
     if (humidity === null || humidity === undefined || isNaN(humidity)) {
         return null;
@@ -92,31 +115,55 @@ const POND_PATHS = {
 };
 
 /**
- * Get all pond sensor data from SignalK
+ * Safely extract a value from a nested SignalK tree object.
+ * Path format: "tanks.liveWell.pond.temperature"
+ */
+const getNestedValue = (tree, dotPath) => {
+    let node = tree;
+    for (const segment of dotPath.split(".")) {
+        if (node === null || node === undefined) return null;
+        node = node[segment];
+    }
+    if (node === null || node === undefined) return null;
+    return node.value !== undefined ? node.value : null;
+};
+
+/**
+ * Get all pond sensor data from SignalK in a single request
  */
 export const getPondData = async () => {
     try {
-        const results = {};
+        const tree = await apiCall("/signalk/v1/api/vessels/self");
+
+        const raw = {};
         for (const [key, path] of Object.entries(POND_PATHS)) {
-            results[key] = await getSignalKValue(path);
+            raw[key] = getNestedValue(tree, path);
         }
+
+        if (typeof console !== "undefined" && console.debug) {
+            console.debug("[SignalKService] Raw values:", JSON.stringify(raw));
+        }
+
+        const waterLevel = calibrateWaterLevel(raw.waterLevel);
 
         const newData = {
             water: {
-                temperature: results.waterTemperature,
-                temperature1: results.waterTemperature1,
-                temperature2: results.waterTemperature2,
-                ph: results.waterPh,
-                conductivity: results.waterConductivity,
-                level: results.waterLevel
+                temperature: raw.waterTemperature,
+                temperature1: raw.waterTemperature1,
+                temperature2: raw.waterTemperature2,
+                ph: raw.waterPh,
+                conductivity: raw.waterConductivity,
+                level: waterLevel.percent,
+                levelCm: waterLevel.cm,
+                levelRaw: raw.waterLevel
             },
             light: {
-                level: results.lightLevel
+                level: raw.lightLevel
             },
             air: {
-                temperature: results.airTemperature,
-                humidity: normalizeHumidityPercent(results.airHumidity),
-                pressure: results.airPressure ? results.airPressure / 100 : null
+                temperature: raw.airTemperature,
+                humidity: normalizeHumidityPercent(raw.airHumidity),
+                pressure: raw.airPressure ? raw.airPressure / 100 : null
             },
             timestamp: new Date().toISOString()
         };

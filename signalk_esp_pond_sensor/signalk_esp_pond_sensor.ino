@@ -78,11 +78,17 @@ unsigned long lastSensor = 0;
 unsigned long lastWifiCheck = 0;
 unsigned long lastMqttRetry = 0;
 
+/* ================= DS18B20 ASYNC STATE ================= */
+#define DS18B20_CONVERSION_MS 800
+bool ds18b20ConversionPending = false;
+unsigned long ds18b20RequestTime = 0;
+
 /* ================= WIFI / RECONNECT STATE ================= */
 unsigned long wifiRetryDelay = WIFI_RETRY_BASE_MS;
 int wifiConsecutiveFailures = 0;
 bool screenOn = true;
 bool ntpSynced = false;
+bool logger_debug = true;
 
 /* ================= SENSOR DATA (cached) ================= */
 float g_t1 = 0, g_t2 = 0, g_tAvg = 0;
@@ -151,9 +157,14 @@ float readUltrasonCm() {
   return d > 0 ? d * 0.034f / 2.0f : NAN;
 }
 
-float safeDS18B20(uint8_t idx) {
+float safeDS18B20(uint8_t idx, float lastGood) {
     float t = sensors.getTempCByIndex(idx);
-    if (t == DEVICE_DISCONNECTED_C || t < -40 || t > 125) return 0.0f;
+    if (t == DEVICE_DISCONNECTED_C || t < -40 || t > 125) {
+        if (logger_debug) {
+            Serial.printf("[DS18B20] Sensor %d invalid: %.2f, keeping %.2f\n", idx, t, lastGood);
+        }
+        return lastGood;
+    }
     return t;
 }
 
@@ -221,7 +232,7 @@ void drawFish(int x, int y, uint16_t bodyColor) {
 }
 
 void drawBubbles() {
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 3; i++) {
     // Bulle avec effet de transparence (cercle double)
     tft.drawCircle((int)bubbles[i].x, (int)bubbles[i].y, bubbles[i].radius, ST77XX_LIGHTBLUE);
     tft.drawPixel((int)bubbles[i].x - 1, (int)bubbles[i].y - 1, ST77XX_WHITE);
@@ -364,6 +375,7 @@ void setup() {
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
   sensors.begin();
+  sensors.setWaitForConversion(false);
   Wire.begin();
 
   // Scan I2C pour diagnostic
@@ -452,13 +464,25 @@ void loop() {
   bool standby = isStandbyTime();
   setScreenPower(!standby);
 
-  // Lecture capteurs toutes les 2s (les DS18B20 sont lents)
-  if (millis() - lastSensor >= 2000) {
-    lastSensor = millis();
+  // DS18B20 async: request conversion, then read after delay
+  if (!ds18b20ConversionPending && millis() - lastSensor >= 2000) {
     sensors.requestTemperatures();
-    g_t1 = safeDS18B20(0);
-    g_t2 = safeDS18B20(1);
+    ds18b20ConversionPending = true;
+    ds18b20RequestTime = millis();
+  }
+
+  if (ds18b20ConversionPending && millis() - ds18b20RequestTime >= DS18B20_CONVERSION_MS) {
+    ds18b20ConversionPending = false;
+    lastSensor = millis();
+
+    g_t1 = safeDS18B20(0, g_t1);
+    g_t2 = safeDS18B20(1, g_t2);
     g_tAvg = (g_t1 + g_t2) / 2.0f;
+
+    if (logger_debug) {
+      Serial.printf("[TEMP] T1=%.2f T2=%.2f Avg=%.2f\n", g_t1, g_t2, g_tAvg);
+    }
+
     g_ph  = safeAnalog(PH_PIN, 14.0f);
     g_ec  = safeAnalog(EC_PIN, 2000.0f);
     g_lux = bh1750Detected ? lightMeter.readLightLevel() : 0.0f;
