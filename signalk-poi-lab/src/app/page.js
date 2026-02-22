@@ -12,6 +12,7 @@ import ConnectionStatus from "./components/ConnectionStatus";
 import HealthScore from "./components/HealthScore";
 import AirDataCard from "./components/AirDataCard";
 import WaterLevelCard from "./components/WaterLevelCard";
+import PondVideoCard from "./components/PondVideoCard";
 import { 
     OPTIMAL_RANGES,
     getPondHealthScore,
@@ -60,10 +61,11 @@ export default function Home() {
                         <ConnectionStatus connected={connected} lastUpdate={lastUpdate} />
                         <button 
                             onClick={refresh}
-                            className="p-2 rounded-full bg-poi-surface shadow-sm hover:shadow-md transition-shadow border border-poi-sage/30"
+                            disabled={loading}
+                            className="p-2 rounded-full bg-poi-surface shadow-sm hover:shadow-md transition-shadow border border-poi-sage/30 disabled:opacity-50"
                             title="Actualiser"
                         >
-                            <svg className="w-5 h-5 text-poi-ocean" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg className={`w-5 h-5 text-poi-ocean ${loading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                             </svg>
                         </button>
@@ -88,6 +90,10 @@ export default function Home() {
                         <HealthScore score={healthScore.score} status={healthScore.status} />
                     </div>
                 </div>
+                
+                <section className="mb-8">
+                    <PondVideoCard />
+                </section>
                 
                 <section className="mb-8 bg-poi-surface rounded-2xl shadow-sm border border-poi-sage/20 overflow-hidden">
                     <div className="bg-gradient-to-r from-poi-ocean to-poi-sage px-5 py-4">
@@ -138,7 +144,7 @@ export default function Home() {
                         </div>
                         
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                            <WaterLevelCard level={data?.water?.level} alertLow={0.3} alertHigh={0.9} />
+                            <WaterLevelCard level={data?.water?.level} levelCm={data?.water?.levelCm} maxCm={60} alertLow={0.917} alertHigh={1.0} />
                             <div className="rounded-xl bg-poi-sand/30 border border-poi-sage/20 p-4">
                                 <h4 className="text-sm font-semibold text-poi-ocean/70 mb-3">Conditions atmosphériques</h4>
                                 <AirDataCard 

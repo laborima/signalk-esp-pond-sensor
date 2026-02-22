@@ -1,0 +1,36 @@
+#pragma once
+
+#define WIFI_SSID     "CHANGE_ME"
+#define WIFI_PASS     "CHANGE_ME"
+
+/* Fallback WiFi: used if primary SSID is not found */
+#define WIFI_SSID2    "iphone_wifi"
+#define WIFI_PASS2    "wifi4iphone"
+
+#define DEVICE_NAME   "signalk-esp-pond-video-01"
+
+/* HTTP stream server port (MJPEG + REST API) */
+#define STREAM_PORT   81
+
+/* WebSocket JPEG stream port (low-latency, ~30ms) */
+/* WS_PORT is defined in the .ino as 82 – override here if needed */
+
+/* Camera auto-sleep: turn off camera after this many ms without active stream */
+#define CAMERA_SLEEP_TIMEOUT_MS  60000
+
+/* Night standby: refuse wake requests between these hours */
+#define STANDBY_HOUR_START 22
+#define STANDBY_HOUR_END    6
+
+/* JPEG quality (4-63, lower = better quality, more bandwidth) */
+#define JPEG_QUALITY  10
+
+/* Frame size: FRAMESIZE_QVGA=4, FRAMESIZE_VGA=8, FRAMESIZE_SVGA=6, FRAMESIZE_UXGA=10 */
+#define FRAME_SIZE    FRAMESIZE_SVGA
+
+/* Camera default settings – adjustable live via POST /config */
+#define CAM_BRIGHTNESS   2   /* -2 to 2 */
+#define CAM_CONTRAST     2   /* -2 to 2 */
+#define CAM_SATURATION   2   /* -2 to 2 */
+#define CAM_AE_LEVEL     2   /* -2 to 2 */
+#define CAM_GAINCEILING  6   /* 0 to 6  */

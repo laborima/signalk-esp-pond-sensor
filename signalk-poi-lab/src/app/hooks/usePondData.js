@@ -25,36 +25,7 @@ export default function usePondData(pollingInterval = 60000) {
             }
             
             const pondData = await getPondData();
-            setData(prevData => {
-                if (!prevData) return pondData;
-                const merged = { ...prevData };
-                if (pondData.water) {
-                    merged.water = { ...merged.water };
-                    for (const [key, val] of Object.entries(pondData.water)) {
-                        if (val !== null && val !== undefined) {
-                            merged.water[key] = val;
-                        }
-                    }
-                }
-                if (pondData.light) {
-                    merged.light = { ...merged.light };
-                    for (const [key, val] of Object.entries(pondData.light)) {
-                        if (val !== null && val !== undefined) {
-                            merged.light[key] = val;
-                        }
-                    }
-                }
-                if (pondData.air) {
-                    merged.air = { ...merged.air };
-                    for (const [key, val] of Object.entries(pondData.air)) {
-                        if (val !== null && val !== undefined) {
-                            merged.air[key] = val;
-                        }
-                    }
-                }
-                merged.timestamp = pondData.timestamp;
-                return merged;
-            });
+            setData(pondData);
             setLastUpdate(pondData.timestamp);
             setError(null);
         } catch (err) {
