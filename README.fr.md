@@ -4,16 +4,23 @@
 
 🌍 *[English](README.md)*
 
+![POI Laboratory Logo](logo.png)
+
 # SignalK ESP32 Pond Sensor
 
-Systeme de monitoring de bassin exterieur / aquaponie base sur ESP32, avec affichage TFT local et publication vers SignalK via MQTT.
+Système de monitoring de bassin extérieur / aquaponie basé sur ESP32, avec affichage TFT local et publication vers SignalK via MQTT.
 
-Ce projet contient deux sous-projets :
+![POI Laboratory Badge](badge.png)
 
-- **signalk_esp_pond_sensor/** — firmware ESP32 (Arduino C++)
-- **signalk-poi-lab/** — webapp SignalK de monitoring (Next.js)
+Ce projet contient trois sous-projets :
+
+- **signalk_esp_pond_sensor/** — Firmware principal ESP32 pour les capteurs (Arduino C++)
+- **signalk_esp_pond_video/** — Firmware ESP32-CAM pour le streaming vidéo (Arduino C++)
+- **signalk-poi-lab/** — Webapp SignalK de monitoring (Next.js)
 
 ## Architecture
+
+![Diagramme d'Architecture](architecture.png)
 
 ```text
 [ Capteurs eau & air ]
@@ -31,7 +38,16 @@ Ce projet contient deux sous-projets :
         '-- Watchdog 30s
 ```
 
-## Capteurs
+## Matériel & Capteurs
+
+![Installation du capteur POI](poi_sensor.jpg)
+*Module capteur principal avec TTGO T-Display*
+
+![Installation du capteur POI vue 2](poi_sensor2.jpg)
+*Détails du câblage et du boîtier*
+
+![Caméra POI](poi_cam.jpg)
+*Module ESP32-CAM pour la surveillance vidéo du bassin en direct*
 
 | Capteur | Mesure | Interface |
 |---------|--------|-----------|
@@ -40,7 +56,8 @@ Ce projet contient deux sous-projets :
 | Sonde EC | Conductivite | Analogique (GPIO 32) |
 | HC-SR04 | Niveau d'eau | GPIO 25/26 |
 | BH1750 | Luminosite (lux) | I2C |
-| BME280/BMP280 | Temperature air, pression | I2C |
+| BME280/BMP280 | Temperature air, humidité, pression | I2C |
+| ESP32-CAM | Flux vidéo en direct | WiFi (HTTP Stream) |
 
 ## Paths SignalK
 
@@ -54,11 +71,12 @@ Ce projet contient deux sous-projets :
 | Niveau d'eau | `tanks.liveWell.pond.currentLevel` |
 | Luminosite | `environment.inside.pond.illuminance` |
 | Temperature air | `environment.inside.pond.temperature` |
+| Humidité de l'air | `environment.outside.relativeHumidity` |
 | Pression | `environment.inside.pond.pressure` |
 
 ## Installation du firmware
 
-### Configuration
+### Configuration du capteur principal
 
 ```bash
 cp signalk_esp_pond_sensor/config.h.sample signalk_esp_pond_sensor/config.h
@@ -74,9 +92,17 @@ Editez `config.h` avec vos identifiants WiFi et l'adresse du broker MQTT :
 #define DEVICE_NAME   "signalk-esp-pond-sensor-01"
 ```
 
-`config.h` est ignore par Git (contient des secrets).
+`config.h` est ignoré par Git (contient des secrets).
 
-### Dependances Arduino
+### Configuration de la caméra
+
+```bash
+cp signalk_esp_pond_video/config.h.sample signalk_esp_pond_video/config.h
+```
+
+Éditez le fichier `config.h` de la caméra de la même manière.
+
+### Dépendances Arduino (Capteur principal)
 
 - WiFi (ESP32 core)
 - PubSubClient
@@ -87,7 +113,7 @@ Editez `config.h` avec vos identifiants WiFi et l'adresse du broker MQTT :
 
 ### Upload
 
-Flasher via Arduino IDE ou PlatformIO sur un ESP32 (TTGO T-Display recommande).
+Flasher via Arduino IDE ou PlatformIO sur un ESP32 (TTGO T-Display recommandé pour le capteur principal, module ESP32-CAM pour la vidéo).
 
 ## Webapp POI Laboratory
 

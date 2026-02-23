@@ -4,16 +4,23 @@
 
 🌍 *[Français](README.fr.md)*
 
+![POI Laboratory Logo](logo.png)
+
 # SignalK ESP32 Pond Sensor
 
 ESP32-based outdoor pond / aquaponics monitoring system with local TFT display and SignalK publishing via MQTT.
 
-This project contains two sub-projects:
+![POI Laboratory Badge](badge.png)
 
-- **signalk_esp_pond_sensor/** — ESP32 firmware (Arduino C++)
+This project contains three sub-projects:
+
+- **signalk_esp_pond_sensor/** — Main ESP32 firmware for sensors (Arduino C++)
+- **signalk_esp_pond_video/** — ESP32-CAM firmware for video streaming (Arduino C++)
 - **signalk-poi-lab/** — SignalK monitoring webapp (Next.js)
 
 ## Architecture
+
+![Architecture Diagram](architecture.png)
 
 ```text
 [ Water & air sensors ]
@@ -31,7 +38,16 @@ This project contains two sub-projects:
         '-- Watchdog 30s
 ```
 
-## Sensors
+## Hardware & Sensors
+
+![POI Sensor Setup](poi_sensor.jpg)
+*Main sensor module with TTGO T-Display*
+
+![POI Sensor Setup 2](poi_sensor2.jpg)
+*Sensor wiring and enclosure details*
+
+![POI Camera](poi_cam.jpg)
+*ESP32-CAM module for live pond monitoring*
 
 | Sensor | Measurement | Interface |
 |--------|-------------|-----------|
@@ -40,7 +56,8 @@ This project contains two sub-projects:
 | EC probe | Conductivity | Analog (GPIO 32) |
 | HC-SR04 | Water level | GPIO 25/26 |
 | BH1750 | Illuminance (lux) | I2C |
-| BME280/BMP280 | Air temperature, pressure | I2C |
+| BME280/BMP280 | Air temperature, humidity, pressure | I2C |
+| ESP32-CAM | Live video feed | WiFi (HTTP Stream) |
 
 ## SignalK Paths
 
@@ -54,11 +71,12 @@ This project contains two sub-projects:
 | Water level | `tanks.liveWell.pond.currentLevel` |
 | Illuminance | `environment.inside.pond.illuminance` |
 | Air temperature | `environment.inside.pond.temperature` |
+| Air humidity | `environment.outside.relativeHumidity` |
 | Pressure | `environment.inside.pond.pressure` |
 
 ## Firmware Setup
 
-### Configuration
+### Main Sensor Configuration
 
 ```bash
 cp signalk_esp_pond_sensor/config.h.sample signalk_esp_pond_sensor/config.h
@@ -76,7 +94,15 @@ Edit `config.h` with your WiFi credentials and MQTT broker address:
 
 `config.h` is gitignored (contains secrets).
 
-### Arduino Dependencies
+### Camera Configuration
+
+```bash
+cp signalk_esp_pond_video/config.h.sample signalk_esp_pond_video/config.h
+```
+
+Edit the camera `config.h` similarly.
+
+### Arduino Dependencies (Main Sensor)
 
 - WiFi (ESP32 core)
 - PubSubClient
@@ -87,7 +113,7 @@ Edit `config.h` with your WiFi credentials and MQTT broker address:
 
 ### Upload
 
-Flash via Arduino IDE or PlatformIO on an ESP32 (TTGO T-Display recommended).
+Flash via Arduino IDE or PlatformIO on an ESP32 (TTGO T-Display recommended for main sensor, ESP32-CAM module for video).
 
 ## POI Laboratory Webapp
 
