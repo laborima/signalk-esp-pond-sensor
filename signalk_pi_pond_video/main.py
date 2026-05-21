@@ -508,7 +508,8 @@ def main():
             host=config['device']['host'],
             port=config['device']['stream_port'],
             debug=False,
-            use_reloader=False
+            use_reloader=False,
+            allow_unsafe_werkzeug=True
         )
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt received")
