@@ -203,6 +203,10 @@ class CameraManager:
                 # Convert to PIL Image
                 img = Image.fromarray(frame)
                 
+                # Convert RGBA to RGB if necessary (JPEG doesn't support alpha channel)
+                if img.mode == 'RGBA':
+                    img = img.convert('RGB')
+                
                 # Apply rotation and flips
                 if self._settings['rotation'] == 90:
                     img = img.rotate(90, expand=True)
