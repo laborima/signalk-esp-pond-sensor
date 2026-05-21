@@ -193,13 +193,16 @@ class CameraManager:
                 # rpicam-vid runs as TCP server with --listen, ffmpeg connects as client
                 ffmpeg_cmd = [
                     'ffmpeg',
-                    '-i', f'tcp://127.0.0.1:{self._rtsp_port}',  # Connect to rpicam-vid TCP
+                    '-fflags', 'nobuffer',  # Reduce input buffering
+                    '-flags', 'low_delay',    # Low delay mode
+                    '-i', f'tcp://127.0.0.1:{self._rtsp_port}?timeout=5000000',  # Connect to rpicam-vid TCP with timeout
                     '-c:v', 'copy',  # Copy video stream (no re-encode)
                     '-f', 'hls',
-                    '-hls_time', '2',  # 2 second segments
-                    '-hls_list_size', '3',  # Keep 3 segments
-                    '-hls_flags', 'delete_segments+omit_endlist',
+                    '-hls_time', '1',  # 1 second segments (reduces latency)
+                    '-hls_list_size', '2',  # Keep only 2 segments (reduces latency)
+                    '-hls_flags', 'delete_segments+omit_endlist+part+independent_segments',
                     '-hls_allow_cache', '0',
+                    '-preset', 'ultrafast',
                     f'{hls_dir}/index.m3u8'
                 ]
                 
