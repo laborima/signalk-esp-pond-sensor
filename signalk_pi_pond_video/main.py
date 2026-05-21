@@ -186,13 +186,17 @@ class AppState:
             'camera_ready': self.camera_manager.is_initialized if self.camera_manager else False,
             'standby': self.is_night_standby(),
             'streaming': is_awake,  # Streaming is active if camera is awake (H.264 always streams when awake)
-            'rtsp_url': stream_urls.get('rtsp'),
             'hls_url': stream_urls.get('hls'),
-            'tcp_url': stream_urls.get('tcp'),
             'wifi_rssi': wifi_rssi,
             'uptime': int(time.time() - self.start_time),
             'local_time': datetime.now().strftime('%H:%M:%S')
         }
+        
+        # Only include RTSP/TCP if available (for backward compatibility)
+        if stream_urls.get('rtsp'):
+            status['rtsp_url'] = stream_urls['rtsp']
+        if stream_urls.get('tcp'):
+            status['tcp_url'] = stream_urls['tcp']
         
         return status
     
@@ -270,12 +274,17 @@ def create_app(config: Dict[str, Any]) -> tuple:
         # Get stream URLs
         stream_urls = state.camera_manager.get_stream_urls()
         
-        response = jsonify({
+        # Build response with available stream URLs
+        response_data = {
             'status': 'awake',
-            'rtsp_url': stream_urls['rtsp'],
-            'hls_url': stream_urls['hls'],
-            'tcp_url': stream_urls['tcp'],
-        })
+            'hls_url': stream_urls.get('hls'),
+        }
+        if stream_urls.get('rtsp'):
+            response_data['rtsp_url'] = stream_urls['rtsp']
+        if stream_urls.get('tcp'):
+            response_data['tcp_url'] = stream_urls['tcp']
+        
+        response = jsonify(response_data)
         response.headers.add('Access-Control-Allow-Origin', '*')
         return response
     
