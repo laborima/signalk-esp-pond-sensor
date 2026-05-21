@@ -109,13 +109,21 @@ libcamera-hello --list-cameras
 newgrp video
 ```
 
-### Low frame rate
+### Low frame rate / Performance
+
+Default config is already optimized for Pi Zero (640x480@10fps). If still slow:
+
 ```bash
-# Edit config and reduce resolution
+# Further reduce quality
 sudo nano /opt/signalk_pi_pond_video/config.yaml
-# Set: resolution: "640x480"
-# Set: framerate: 10
+# Set: jpeg_quality: 60
+# Or reduce resolution: 320x240 (not recommended)
 sudo systemctl restart signalk-pi-pond-video
+```
+
+Also disable HDMI to free resources:
+```bash
+sudo /opt/vc/bin/tvservice -o
 ```
 
 ### Service won't start
