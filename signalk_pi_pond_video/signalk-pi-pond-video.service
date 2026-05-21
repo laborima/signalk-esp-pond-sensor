@@ -1,0 +1,31 @@
+[Unit]
+Description=SignalK Pi Pond Video Streaming Server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=video
+WorkingDirectory=/opt/signalk_pi_pond_video
+ExecStart=/usr/bin/python3 /opt/signalk_pi_pond_video/main.py
+Restart=always
+RestartSec=5
+Environment="PYTHONUNBUFFERED=1"
+Environment="CONFIG_PATH=/opt/signalk_pi_pond_video/config.yaml"
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log /tmp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Resource limits for Pi Zero
+MemoryMax=128M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
