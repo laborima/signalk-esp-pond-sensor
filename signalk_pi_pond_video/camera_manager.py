@@ -243,6 +243,17 @@ class CameraManager:
                 self._cleanup_camera()
                 return False
     
+    def _is_port_available(self, port: int) -> bool:
+        """Check if a port is available."""
+        import socket
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(("0.0.0.0", port))
+            sock.close()
+            return True
+        except OSError:
+            return False
+    
     def _start_hls_server(self):
         """Start simple HTTP server for HLS files."""
         import http.server
@@ -250,6 +261,12 @@ class CameraManager:
         import threading
         
         hls_dir = self._hls_dir
+        hls_port = self._hls_port
+        
+        # Check if port is available
+        if not self._is_port_available(hls_port):
+            logging.error(f"Port {hls_port} is already in use!")
+            return False
         
         class HLSHandler(http.server.SimpleHTTPRequestHandler):
             def translate_path(self, path):
@@ -269,12 +286,28 @@ class CameraManager:
                 pass
         
         def serve():
-            with socketserver.TCPServer(("0.0.0.0", self._hls_port), HLSHandler) as httpd:
-                httpd.serve_forever()
+            try:
+                with socketserver.TCPServer(("0.0.0.0", hls_port), HLSHandler) as httpd:
+                    logging.info(f"HLS HTTP server listening on port {hls_port}")
+                    httpd.serve_forever()
+            except Exception as e:
+                logging.error(f"HLS server error: {e}")
         
         self._http_thread = threading.Thread(target=serve, daemon=True)
         self._http_thread.start()
-        logging.info(f"HLS HTTP server started on port {self._hls_port}")
+        
+        # Wait for server to start
+        time.sleep(0.5)
+        
+        # Verify server is running
+        for _ in range(10):
+            if not self._is_port_available(hls_port):
+                logging.info(f"HLS server confirmed running on port {hls_port}")
+                return True
+            time.sleep(0.2)
+        
+        logging.error("HLS server failed to start")
+        return False
     
     def _cleanup_process(self, proc):
         """Clean up a single process."""
