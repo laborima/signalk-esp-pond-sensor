@@ -474,9 +474,10 @@ class CameraManager:
         except:
             ip = "127.0.0.1"
         
+        # HLS is now served via Flask API, not separate HTTP server
         return {
             'rtsp': f"tcp://{ip}:{self._rtsp_port}",  # VLC compatible
-            'hls': f"http://{ip}:{self._hls_port}/live/index.m3u8",
+            'hls': f"http://{ip}:8080/hls/index.m3u8",  # Via Flask API
         }
 
 
