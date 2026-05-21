@@ -3,15 +3,15 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 
 /**
- * PondVideoCard – Live stream from ESP32-S3 Sense camera.
+ * PondVideoCard – Live stream from ESP32-S3 Sense or Raspberry Pi camera.
  *
  * Streaming strategy:
- *   1. WebSocket JPEG → <canvas>  (~30ms latency)
- *   2. MJPEG fallback → <img>     (~200ms latency)
+ *   - ESP32: WebSocket JPEG → <canvas>  (~30ms latency) or MJPEG fallback
+ *   - Raspberry Pi: HLS → <video> (H.264 hardware encoding)
  *
  * Camera controls (brightness, contrast, etc.) via POST /config.
  *
- * @param {string} streamUrl - Optional override base URL for the ESP32 camera
+ * @param {string} streamUrl - Optional override base URL for the camera
  */
 
 const FRAME_SIZES = [
@@ -92,7 +92,8 @@ export default function PondVideoCard({ streamUrl }) {
     const [waking, setWaking] = useState(false);
     const [showControls, setShowControls] = useState(false);
     const [camSettings, setCamSettings] = useState(null);
-    const [streamMode, setStreamMode] = useState("ws");
+    const [streamMode, setStreamMode] = useState("ws"); // "ws", "mjpeg", or "hls"
+    const [hlsUrl, setHlsUrl] = useState(null); // HLS stream URL for Pi
     const [fps, setFps] = useState(0);
     const [streamError, setStreamError] = useState(false);
     const [isMobileViewport, setIsMobileViewport] = useState(false);
@@ -100,6 +101,9 @@ export default function PondVideoCard({ streamUrl }) {
 
     // Get camera config based on device type
     const camConfig = CAMERA_CONFIGS[deviceType] || CAMERA_CONFIGS.esp32;
+    
+    // Video ref for HLS playback
+    const videoRef = useRef(null);
 
     const canvasRef = useRef(null);
     const imgRef = useRef(null);
@@ -161,8 +165,25 @@ export default function PondVideoCard({ streamUrl }) {
                 // Detect device type: ESP32 has 'psram' or 'free_heap', Pi doesn't
                 const detectedType = (info.psram !== undefined || info.free_heap !== undefined) ? "esp32" : "pi";
                 setDeviceType(detectedType);
+                
+                // Detect stream type: Pi H.264 has hls_url, ESP32 uses WebSocket/MJPEG
+                if (info.hls_url) {
+                    setHlsUrl(info.hls_url);
+                    setStreamMode("hls");
+                } else if (detectedType === "esp32") {
+                    setStreamMode("ws");
+                    setHlsUrl(null);
+                }
+                
                 if (info.standby) setStatus("standby");
-                else if (info.camera_awake) setStatus("awake");
+                else if (info.camera_awake) {
+                    // For HLS, camera_awake means streaming is active
+                    if (info.hls_url) {
+                        setStatus("streaming");
+                    } else {
+                        setStatus("awake");
+                    }
+                }
                 else setStatus("sleeping");
             } else {
                 setStatus("offline");
@@ -278,8 +299,17 @@ export default function PondVideoCard({ streamUrl }) {
         try {
             const r = await fetch(resolvedUrl + "/wake", { method: "POST", signal: controller.signal });
             if (r.ok) {
+                const data = await r.json();
                 await applyFixedCamSettings();
-                setStatus("awake");
+                
+                // Check if HLS stream is available (Pi H.264 mode)
+                if (data.hls_url) {
+                    setHlsUrl(data.hls_url);
+                    setStreamMode("hls");
+                    setStatus("streaming");
+                } else {
+                    setStatus("awake");
+                }
             } else {
                 const data = await r.json().catch(() => ({}));
                 setStatus(data.status === "standby" ? "standby" : "offline");
@@ -297,14 +327,18 @@ export default function PondVideoCard({ streamUrl }) {
         stopWsStream();
         setStatus("sleeping");
         setFps(0);
+        setHlsUrl(null);
         try {
             await fetch(resolvedUrl + "/sleep", { method: "POST", signal: AbortSignal.timeout(5000) });
         } catch { /* ignore */ }
     }, [resolvedUrl, stopWsStream]);
 
     useEffect(() => {
-        if (status === "awake" && !wsRef.current) startWsStream();
-    }, [status, startWsStream]);
+        // Only start WebSocket stream for ESP32 (not HLS mode)
+        if (status === "awake" && streamMode !== "hls" && !wsRef.current) {
+            startWsStream();
+        }
+    }, [status, streamMode, startWsStream]);
 
     useEffect(() => () => {
         stopWsStream();
@@ -466,7 +500,8 @@ export default function PondVideoCard({ streamUrl }) {
                     </span>
                     {isStreaming && (
                         <span className="text-xs text-white/70 font-mono">
-                            {streamMode === "ws" ? "WS" : "MJPEG"} · {fps} fps
+                            {streamMode === "ws" ? "WS" : streamMode === "hls" ? "HLS" : "MJPEG"}
+                            {streamMode !== "hls" && ` · ${fps} fps`}
                             {streamError && <span className="text-yellow-300"> · reconnexion...</span>}
                         </span>
                     )}
@@ -684,6 +719,24 @@ export default function PondVideoCard({ streamUrl }) {
                         style={isFullscreen ? { width: "100%", height: "100%", objectFit: "contain", display: "block" } : {}}
                         className={isFullscreen ? "" : "w-full h-full object-cover"}
                         onError={checkCamera} />
+                )}
+
+                {/* HLS video for Raspberry Pi H.264 */}
+                {isStreaming && streamMode === "hls" && hlsUrl && (
+                    <video
+                        ref={videoRef}
+                        src={hlsUrl}
+                        autoPlay
+                        muted
+                        playsInline
+                        controls={isFullscreen}
+                        style={isFullscreen ? { width: "100%", height: "100%", objectFit: "contain", display: "block" } : {}}
+                        className={isFullscreen ? "" : "w-full h-full object-cover"}
+                        onError={() => {
+                            setStreamError(true);
+                            checkCamera();
+                        }}
+                    />
                 )}
 
                 {(status === "sleeping" || waking) && (
