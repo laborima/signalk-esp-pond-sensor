@@ -250,11 +250,21 @@ vcgencmd get_camera
 sudo usermod -a -G video pi
 ```
 
-### Performance Issues
-- Lower resolution: `640x480` for Pi Zero
-- Reduce framerate: `10` fps
-- Decrease JPEG quality: `70`
-- Enable GPU memory split in `raspi-config`
+### Performance Issues (Pi Zero WH)
+
+The Pi Zero WH has limited CPU power. For smooth streaming, use these settings in `config.yaml`:
+
+```yaml
+camera:
+  resolution: "640x480"    # Default: 640x480 (was 1280x720)
+  framerate: 10            # Default: 10 fps (was 15)
+  jpeg_quality: 70         # Default: 70 (was 85)
+```
+
+Additional optimizations:
+- Enable GPU memory split in `sudo raspi-config` -> Advanced Options -> Memory Split (set to 128MB or higher)
+- Disable HDMI if not needed: `sudo /opt/vc/bin/tvservice -o`
+- Lower CPU frequency to reduce heat: add `arm_freq=600` to `/boot/config.txt`
 
 ### Network Issues
 ```bash

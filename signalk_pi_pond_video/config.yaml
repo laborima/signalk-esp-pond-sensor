@@ -8,12 +8,12 @@ device:
   host: "0.0.0.0"
 
 camera:
-  # Resolution: 640x480, 1280x720, 1920x1080
-  resolution: "1280x720"
-  # Framerate: 10, 15, 20, 30
-  framerate: 15
-  # JPEG quality: 1-100
-  jpeg_quality: 85
+  # Resolution: 640x480 (recommended for Pi Zero), 1280x720, 1920x1080
+  resolution: "640x480"
+  # Framerate: 10 (recommended for Pi Zero), 15, 20, 30
+  framerate: 10
+  # JPEG quality: 1-100 (lower = faster, 70 recommended for Pi Zero)
+  jpeg_quality: 70
   # Camera rotation: 0, 90, 180, 270
   rotation: 180
   # Horizontal flip
