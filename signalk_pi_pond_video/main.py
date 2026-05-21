@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-SignalK Pi Pond Video - Main Application
+SignalK Pi Pond Video - Main Application (H.264/RTSP Edition)
 
 A lightweight video streaming server for Raspberry Pi Zero WH with Camera Module v3.
-Provides MJPEG and WebSocket streaming compatible with SignalK/POI Laboratory dashboard.
+Uses rpicam-vid for hardware H.264 encoding with RTSP/HLS streaming.
 
 Features:
+- H.264 hardware encoding (efficient on Pi Zero)
+- RTSP and HLS streaming
 - HTTP REST API for camera control
-- MJPEG streaming endpoint
-- WebSocket binary streaming
 - Auto-sleep power saving
 - Night standby mode
 - Runtime camera configuration
 
 @author Matthieu Laborie
-@version 1.0.0
+@version 2.0.0
 """
 
 import os
@@ -29,7 +29,6 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 
 from flask import Flask, Response, request, jsonify
-from flask_socketio import SocketIO, emit
 
 from camera_manager import CameraManager
 
@@ -41,19 +40,19 @@ from camera_manager import CameraManager
 DEFAULT_CONFIG = {
     'device': {
         'name': 'pi-pond-cam',
-        'stream_port': 8080,
-        'host': '0.0.0.0'
+        'api_port': 8080,
+        'host': '0.0.0.0',
+        'rtsp_port': 8554,
+        'hls_port': 8888,
     },
     'camera': {
         'resolution': '1280x720',
-        'framerate': 15,
-        'jpeg_quality': 85,
+        'framerate': 25,
+        'bitrate': 2000000,  # 2 Mbps for Pi Zero
+        'quality': 23,  # H.264 CRF (lower=better)
         'rotation': 180,
         'hflip': False,
         'vflip': True,
-        'awb_mode': 'auto',
-        'exposure_mode': 'auto',
-        'meter_mode': 'average'
     },
     'power': {
         'auto_sleep_timeout': 600,
@@ -108,8 +107,6 @@ class AppState:
         self.config = config
         self.camera_manager: Optional[CameraManager] = None
         self.last_activity = time.time()
-        self.stream_clients = 0
-        self.ws_clients = 0
         self.start_time = time.time()
         self.running = True
         self._lock = threading.Lock()
@@ -139,15 +136,12 @@ class AppState:
         if not self.camera_manager or not self.camera_manager.is_awake:
             return False
             
-        if self.stream_clients > 0 or self.ws_clients > 0:
-            return False
-            
         timeout = self.config['power'].get('auto_sleep_timeout', 600)
         inactive_time = time.time() - self.last_activity
         return inactive_time >= timeout
     
     def get_status(self) -> Dict[str, Any]:
-        """Get current device status."""
+        """Get current device status with RTSP/HLS stream URLs."""
         import subprocess
         
         # Get WiFi RSSI
@@ -158,7 +152,6 @@ class AppState:
             )
             for line in result.stdout.split('\n'):
                 if 'Signal level' in line or 'level=' in line:
-                    # Parse signal level
                     parts = line.split()
                     for part in parts:
                         if 'level=' in part or 'dBm' in part:
@@ -170,16 +163,32 @@ class AppState:
         except:
             pass
         
+        # Get stream URLs if camera manager is available
+        stream_urls = {}
+        if self.camera_manager:
+            stream_urls = self.camera_manager.get_stream_urls()
+        else:
+            # Fallback URLs
+            ip = self.get_ip()
+            rtsp_port = self.config['device'].get('rtsp_port', 8554)
+            hls_port = self.config['device'].get('hls_port', 8888)
+            stream_urls = {
+                'rtsp': f"rtsp://{ip}:{rtsp_port}/live",
+                'hls': f"http://{ip}:{hls_port}/live/index.m3u8",
+                'tcp': f"tcp://{ip}:{rtsp_port}",
+            }
+        
+        is_awake = self.camera_manager.is_awake if self.camera_manager else False
+        
         status = {
             'device': self.config['device']['name'],
-            'camera_awake': self.camera_manager.is_awake if self.camera_manager else False,
+            'camera_awake': is_awake,
             'camera_ready': self.camera_manager.is_initialized if self.camera_manager else False,
             'standby': self.is_night_standby(),
-            'streaming': self.stream_clients > 0 or self.ws_clients > 0,
-            'ws_clients': self.ws_clients,
-            'stream_clients': self.stream_clients,
-            'stream_url': f"http://{self.get_ip()}:{self.config['device']['stream_port']}/stream",
-            'ws_url': f"ws://{self.get_ip()}:{self.config['device']['stream_port']}/ws",
+            'streaming': is_awake,  # Streaming is active if camera is awake (H.264 always streams when awake)
+            'rtsp_url': stream_urls.get('rtsp'),
+            'hls_url': stream_urls.get('hls'),
+            'tcp_url': stream_urls.get('tcp'),
             'wifi_rssi': wifi_rssi,
             'uptime': int(time.time() - self.start_time),
             'local_time': datetime.now().strftime('%H:%M:%S')
@@ -206,15 +215,17 @@ class AppState:
 # ============================================================================
 
 def create_app(config: Dict[str, Any]) -> tuple:
-    """Create Flask app and SocketIO instance."""
+    """Create Flask app and initialize camera."""
     app = Flask(__name__)
     app.config['SECRET_KEY'] = 'signalk-pi-pond-video-secret'
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
     
     state = AppState(config)
     
-    # Initialize camera manager
-    state.camera_manager = CameraManager(config['camera'])
+    # Initialize camera manager with RTSP/HLS ports
+    camera_config = config['camera'].copy()
+    camera_config['rtsp_port'] = config['device'].get('rtsp_port', 8554)
+    camera_config['hls_port'] = config['device'].get('hls_port', 8888)
+    state.camera_manager = CameraManager(camera_config)
     
     # =========================================================================
     # Routes
@@ -256,10 +267,14 @@ def create_app(config: Dict[str, Any]) -> tuple:
             response.headers.add('Access-Control-Allow-Origin', '*')
             return response, 500
         
+        # Get stream URLs
+        stream_urls = state.camera_manager.get_stream_urls()
+        
         response = jsonify({
             'status': 'awake',
-            'stream_url': f"http://{AppState.get_ip()}:{config['device']['stream_port']}/stream",
-            'ws_url': f"ws://{AppState.get_ip()}:{config['device']['stream_port']}/ws"
+            'rtsp_url': stream_urls['rtsp'],
+            'hls_url': stream_urls['hls'],
+            'tcp_url': stream_urls['tcp'],
         })
         response.headers.add('Access-Control-Allow-Origin', '*')
         return response
@@ -313,49 +328,18 @@ def create_app(config: Dict[str, Any]) -> tuple:
         response.headers.add('Cache-Control', 'no-cache')
         return response
     
-    @app.route('/stream', methods=['GET', 'OPTIONS'])
-    def stream():
-        """MJPEG streaming endpoint."""
+    @app.route('/streams', methods=['GET', 'OPTIONS'])
+    def streams():
+        """Get RTSP and HLS stream URLs."""
         if request.method == 'OPTIONS':
             response = jsonify({})
             response.headers.add('Access-Control-Allow-Origin', '*')
             response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
             return response, 204
         
-        if state.is_night_standby():
-            return 'Night standby active', 503
-        
-        if not state.camera_manager.is_awake:
-            if not state.camera_manager.wake():
-                return 'Camera wake failed', 503
-            time.sleep(0.5)
-        
-        state.touch_activity()
-        state.stream_clients += 1
-        
-        def generate():
-            boundary = b'--frame\r\n'
-            try:
-                while state.camera_manager.is_awake:
-                    state.touch_activity()
-                    frame = state.camera_manager.capture_frame()
-                    if frame:
-                        yield boundary
-                        yield b'Content-Type: image/jpeg\r\n'
-                        yield f'Content-Length: {len(frame)}\r\n\r\n'.encode()
-                        yield frame
-                        yield b'\r\n'
-                    time.sleep(0.033)  # ~30 fps max
-            finally:
-                state.stream_clients -= 1
-                state.touch_activity()
-        
-        response = Response(
-            generate(),
-            mimetype='multipart/x-mixed-replace; boundary=frame'
-        )
+        stream_urls = state.camera_manager.get_stream_urls() if state.camera_manager else {}
+        response = jsonify(stream_urls)
         response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Cache-Control', 'no-cache, no-store, must-revalidate')
         return response
     
     @app.route('/config', methods=['GET', 'POST', 'OPTIONS'])
@@ -407,28 +391,6 @@ def create_app(config: Dict[str, Any]) -> tuple:
         return response
     
     # =========================================================================
-    # WebSocket Events
-    # =========================================================================
-    
-    @socketio.on('connect')
-    def handle_connect():
-        """Handle WebSocket client connection."""
-        logging.info(f"WebSocket client connected: {request.sid}")
-        state.ws_clients += 1
-        state.touch_activity()
-        
-        if not state.camera_manager.is_awake:
-            state.camera_manager.wake()
-    
-    @socketio.on('disconnect')
-    def handle_disconnect():
-        """Handle WebSocket client disconnection."""
-        logging.info(f"WebSocket client disconnected: {request.sid}")
-        if state.ws_clients > 0:
-            state.ws_clients -= 1
-        state.touch_activity()
-    
-    # =========================================================================
     # Background Tasks
     # =========================================================================
     
@@ -444,7 +406,7 @@ def create_app(config: Dict[str, Any]) -> tuple:
     sleep_thread = threading.Thread(target=auto_sleep_monitor, daemon=True)
     sleep_thread.start()
     
-    return app, socketio, state
+    return app, state
 
 
 # ============================================================================
@@ -482,13 +444,15 @@ def main():
     setup_logging(config)
     
     logging.info("=" * 60)
-    logging.info("SignalK Pi Pond Video - Starting up")
+    logging.info("SignalK Pi Pond Video - Starting up (H.264/RTSP)")
     logging.info(f"Device: {config['device']['name']}")
-    logging.info(f"Port: {config['device']['stream_port']}")
+    logging.info(f"API Port: {config['device']['api_port']}")
+    logging.info(f"RTSP Port: {config['device'].get('rtsp_port', 8554)}")
+    logging.info(f"HLS Port: {config['device'].get('hls_port', 8888)}")
     logging.info("=" * 60)
     
     # Create Flask app
-    app, socketio, state = create_app(config)
+    app, state = create_app(config)
     
     # Signal handlers for graceful shutdown
     def signal_handler(signum, frame):
@@ -503,13 +467,11 @@ def main():
     
     # Run server
     try:
-        socketio.run(
-            app,
+        app.run(
             host=config['device']['host'],
-            port=config['device']['stream_port'],
+            port=config['device']['api_port'],
             debug=False,
-            use_reloader=False,
-            allow_unsafe_werkzeug=True
+            use_reloader=False
         )
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt received")

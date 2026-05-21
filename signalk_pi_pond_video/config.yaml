@@ -1,31 +1,33 @@
 # SignalK Pi Pond Video Configuration
 # Raspberry Pi Zero WH with Camera Module v3
+# H.264 Hardware Encoding Edition
 
 device:
   name: "pi-pond-cam"
-  stream_port: 8080
+  # API port for HTTP control interface
+  api_port: 8080
   # Host to bind to (0.0.0.0 for all interfaces)
   host: "0.0.0.0"
+  # RTSP streaming port (for VLC, etc.)
+  rtsp_port: 8554
+  # HLS streaming port (for browser playback)
+  hls_port: 8888
 
 camera:
   # Resolution: 640x480 (recommended for Pi Zero), 1280x720, 1920x1080
   resolution: "640x480"
-  # Framerate: 10 (recommended for Pi Zero), 15, 20, 30
-  framerate: 10
-  # JPEG quality: 1-100 (lower = faster, 70 recommended for Pi Zero)
-  jpeg_quality: 70
+  # Framerate: 25 for smooth H.264 streaming (Pi Zero can handle this with hardware encoding)
+  framerate: 25
+  # H.264 bitrate in bits per second (2 Mbps recommended for Pi Zero)
+  bitrate: 2000000
+  # H.264 CRF quality: 18-28 range, lower = better quality (23 is good balance)
+  quality: 23
   # Camera rotation: 0, 90, 180, 270
   rotation: 180
   # Horizontal flip
   hflip: false
   # Vertical flip
   vflip: true
-  # Auto white balance
-  awb_mode: "auto"
-  # Exposure mode
-  exposure_mode: "auto"
-  # Metering mode
-  meter_mode: "average"
 
 power:
   # Auto-sleep after inactivity (seconds)
