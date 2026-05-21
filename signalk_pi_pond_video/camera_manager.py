@@ -115,7 +115,11 @@ class CameraManager:
     
     def wake(self) -> bool:
         """
-        Wake up and start H.264 streaming via rpicam-vid + ffmpeg HLS.
+        Wake up and start H.264 streaming via rpicam-vid (TCP) + ffmpeg (HLS).
+        
+        Provides both:
+        - TCP raw H.264 on port 8554 (for VLC: tcp://192.168.1.84:8554)
+        - HLS on port 8888 (for browsers)
         
         @return: True if camera successfully initialized
         """
@@ -124,7 +128,7 @@ class CameraManager:
                 return True
             
             try:
-                logging.info("Starting H.264 streaming with integrated HLS...")
+                logging.info("Starting H.264 streaming (TCP + HLS)...")
                 
                 resolution = self._get_resolution()
                 width, height = resolution
@@ -138,7 +142,7 @@ class CameraManager:
                 hls_dir = "/tmp/hls"
                 os.makedirs(hls_dir, exist_ok=True)
                 
-                # Build rpicam-vid command - outputs to FIFO/pipe for ffmpeg
+                # Build rpicam-vid command - outputs TCP H.264 for VLC compatibility
                 rpicam_cmd = [
                     'rpicam-vid',
                     '-t', '0',  # Run indefinitely
@@ -148,7 +152,8 @@ class CameraManager:
                     '--bitrate', str(bitrate),
                     '--codec', 'h264',
                     '--inline',
-                    '-o', '-',  # Output to stdout for ffmpeg
+                    '--listen',  # Listen mode for TCP
+                    '-o', f'tcp://0.0.0.0:{self._rtsp_port}',  # TCP output (VLC compatible)
                 ]
                 
                 # Add rotation if needed
@@ -165,10 +170,30 @@ class CameraManager:
                 if vflip:
                     rpicam_cmd.append('--vflip')
                 
-                # Build ffmpeg command to convert H264 to HLS
+                logging.info(f"Starting rpicam-vid TCP on port {self._rtsp_port}")
+                
+                # Start rpicam-vid process (TCP server)
+                rpicam_proc = subprocess.Popen(
+                    rpicam_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    preexec_fn=os.setsid
+                )
+                
+                # Wait for rpicam-vid to start listening
+                time.sleep(2)
+                
+                # Check if rpicam-vid is running
+                if rpicam_proc.poll() is not None:
+                    logging.error("rpicam-vid exited immediately")
+                    self._cleanup_process(rpicam_proc)
+                    return False
+                
+                # Build ffmpeg command to read TCP and create HLS
+                # rpicam-vid runs as TCP server with --listen, ffmpeg connects as client
                 ffmpeg_cmd = [
                     'ffmpeg',
-                    '-i', 'pipe:0',  # Read from stdin
+                    '-i', f'tcp://127.0.0.1:{self._rtsp_port}',  # Connect to rpicam-vid TCP
                     '-c:v', 'copy',  # Copy video stream (no re-encode)
                     '-f', 'hls',
                     '-hls_time', '2',  # 2 second segments
@@ -178,34 +203,22 @@ class CameraManager:
                     f'{hls_dir}/index.m3u8'
                 ]
                 
-                logging.info(f"Starting rpicam-vid | ffmpeg pipeline")
+                logging.info("Starting ffmpeg for HLS transcoding")
                 
-                # Start rpicam-vid process
-                rpicam_proc = subprocess.Popen(
-                    rpicam_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    preexec_fn=os.setsid
-                )
-                
-                # Start ffmpeg process reading from rpicam-vid
+                # Start ffmpeg process
                 ffmpeg_proc = subprocess.Popen(
                     ffmpeg_cmd,
-                    stdin=rpicam_proc.stdout,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     preexec_fn=os.setsid
                 )
                 
-                # Close rpicam stdout in parent (ffmpeg now owns it)
-                rpicam_proc.stdout.close()
-                
                 # Wait for HLS files to be created
                 time.sleep(3)
                 
-                # Check if processes are running
-                if rpicam_proc.poll() is not None or ffmpeg_proc.poll() is not None:
-                    logging.error("Stream processes exited immediately")
+                # Check if ffmpeg is running
+                if ffmpeg_proc.poll() is not None:
+                    logging.error("ffmpeg exited immediately")
                     self._cleanup_process(rpicam_proc)
                     self._cleanup_process(ffmpeg_proc)
                     return False
@@ -221,7 +234,8 @@ class CameraManager:
                 self._is_initialized = True
                 
                 logging.info(f"H.264 streaming active - {width}x{height}@{framerate}fps")
-                logging.info(f"HLS available at: http://<pi-ip>:{self._hls_port}/live/index.m3u8")
+                logging.info(f"TCP (VLC): tcp://<pi-ip>:{self._rtsp_port}")
+                logging.info(f"HLS (Browser): http://<pi-ip>:{self._hls_port}/live/index.m3u8")
                 return True
                 
             except Exception as e:
@@ -410,9 +424,9 @@ class CameraManager:
     
     def get_stream_urls(self) -> Dict[str, str]:
         """
-        Get HLS stream URL.
+        Get stream URLs (TCP for VLC, HLS for browsers).
         
-        @return: Dictionary with 'hls' URL
+        @return: Dictionary with 'rtsp' (TCP) and 'hls' URLs
         """
         # Get Pi's IP address
         import socket
@@ -425,6 +439,7 @@ class CameraManager:
             ip = "127.0.0.1"
         
         return {
+            'rtsp': f"tcp://{ip}:{self._rtsp_port}",  # VLC compatible
             'hls': f"http://{ip}:{self._hls_port}/live/index.m3u8",
         }
 
