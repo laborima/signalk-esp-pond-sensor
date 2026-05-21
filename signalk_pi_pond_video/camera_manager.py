@@ -62,7 +62,6 @@ class CameraManager:
         self.config = config
         self._rpicam_process: Optional[subprocess.Popen] = None
         self._ffmpeg_process: Optional[subprocess.Popen] = None
-        self._http_thread = None
         self._hls_dir = None
         self._is_awake = False
         self._is_initialized = False
@@ -70,7 +69,6 @@ class CameraManager:
         self._settings = self.DEFAULT_SETTINGS.copy()
         self._fifo_path = "/tmp/camera_fifo"
         self._rtsp_port = config.get('rtsp_port', 8554)
-        self._hls_port = config.get('hls_port', 8888)
         
         # Apply config overrides
         self._apply_config_settings()
@@ -193,16 +191,13 @@ class CameraManager:
                 # rpicam-vid runs as TCP server with --listen, ffmpeg connects as client
                 ffmpeg_cmd = [
                     'ffmpeg',
-                    '-fflags', 'nobuffer',  # Reduce input buffering
-                    '-flags', 'low_delay',    # Low delay mode
-                    '-i', f'tcp://127.0.0.1:{self._rtsp_port}?timeout=5000000',  # Connect to rpicam-vid TCP with timeout
+                    '-i', f'tcp://127.0.0.1:{self._rtsp_port}',  # Connect to rpicam-vid TCP
                     '-c:v', 'copy',  # Copy video stream (no re-encode)
                     '-f', 'hls',
-                    '-hls_time', '1',  # 1 second segments (reduces latency)
-                    '-hls_list_size', '2',  # Keep only 2 segments (reduces latency)
-                    '-hls_flags', 'delete_segments+omit_endlist+part+independent_segments',
+                    '-hls_time', '2',  # 2 second segments
+                    '-hls_list_size', '3',  # Keep 3 segments
+                    '-hls_flags', 'delete_segments+omit_endlist',
                     '-hls_allow_cache', '0',
-                    '-preset', 'ultrafast',
                     f'{hls_dir}/index.m3u8'
                 ]
                 
@@ -230,87 +225,18 @@ class CameraManager:
                 self._ffmpeg_process = ffmpeg_proc
                 self._hls_dir = hls_dir
                 
-                # Start HTTP server for HLS files
-                self._start_hls_server()
-                
                 self._is_awake = True
                 self._is_initialized = True
                 
                 logging.info(f"H.264 streaming active - {width}x{height}@{framerate}fps")
                 logging.info(f"TCP (VLC): tcp://<pi-ip>:{self._rtsp_port}")
-                logging.info(f"HLS (Browser): http://<pi-ip>:{self._hls_port}/live/index.m3u8")
+                logging.info(f"HLS (Browser): http://<pi-ip>:8080/hls/index.m3u8")
                 return True
                 
             except Exception as e:
                 logging.error(f"Camera wake failed: {e}")
                 self._cleanup_camera()
                 return False
-    
-    def _is_port_available(self, port: int) -> bool:
-        """Check if a port is available."""
-        import socket
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.bind(("0.0.0.0", port))
-            sock.close()
-            return True
-        except OSError:
-            return False
-    
-    def _start_hls_server(self):
-        """Start simple HTTP server for HLS files."""
-        import http.server
-        import socketserver
-        import threading
-        
-        hls_dir = self._hls_dir
-        hls_port = self._hls_port
-        
-        # Check if port is available
-        if not self._is_port_available(hls_port):
-            logging.error(f"Port {hls_port} is already in use!")
-            return False
-        
-        class HLSHandler(http.server.SimpleHTTPRequestHandler):
-            def translate_path(self, path):
-                # Map /live/xxx to /tmp/hls/xxx
-                if path.startswith('/live/'):
-                    path = path[6:]  # Remove /live/ prefix
-                # Join with HLS directory
-                return os.path.join(hls_dir, path.lstrip('/'))
-            
-            def end_headers(self):
-                # Add CORS headers for browser compatibility
-                self.send_header('Access-Control-Allow-Origin', '*')
-                super().end_headers()
-            
-            def log_message(self, format, *args):
-                # Suppress HTTP logging
-                pass
-        
-        def serve():
-            try:
-                with socketserver.TCPServer(("0.0.0.0", hls_port), HLSHandler) as httpd:
-                    logging.info(f"HLS HTTP server listening on port {hls_port}")
-                    httpd.serve_forever()
-            except Exception as e:
-                logging.error(f"HLS server error: {e}")
-        
-        self._http_thread = threading.Thread(target=serve, daemon=True)
-        self._http_thread.start()
-        
-        # Wait for server to start
-        time.sleep(0.5)
-        
-        # Verify server is running
-        for _ in range(10):
-            if not self._is_port_available(hls_port):
-                logging.info(f"HLS server confirmed running on port {hls_port}")
-                return True
-            time.sleep(0.2)
-        
-        logging.error("HLS server failed to start")
-        return False
     
     def _cleanup_process(self, proc):
         """Clean up a single process."""
@@ -336,7 +262,7 @@ class CameraManager:
             logging.info("Camera sleeping")
     
     def _cleanup_camera(self):
-        """Clean up rpicam-vid, ffmpeg processes and HTTP server."""
+        """Clean up rpicam-vid and ffmpeg processes."""
         # Clean up rpicam-vid process
         if hasattr(self, '_rpicam_process') and self._rpicam_process:
             self._cleanup_process(self._rpicam_process)
@@ -346,9 +272,6 @@ class CameraManager:
         if hasattr(self, '_ffmpeg_process') and self._ffmpeg_process:
             self._cleanup_process(self._ffmpeg_process)
             self._ffmpeg_process = None
-        
-        # HTTP thread will stop automatically (daemon thread)
-        self._http_thread = None
     
     def capture_frame(self) -> Optional[bytes]:
         """
