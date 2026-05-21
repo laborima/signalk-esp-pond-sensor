@@ -21,6 +21,49 @@ const FRAME_SIZES = [
     { value: 10, label: "UXGA 1600×1200" },
 ];
 
+// Camera settings configs per platform
+const CAMERA_CONFIGS = {
+    esp32: {
+        brightness: { min: -2, max: 2, default: -1, scale: 1 },
+        contrast: { min: -2, max: 2, default: 1, scale: 1 },
+        saturation: { min: -2, max: 2, default: 0, scale: 1 },
+        ae_level: { min: -2, max: 2, default: 2, scale: 1 },
+        gainceiling: { min: 0, max: 6, default: 6, scale: 1 },
+        quality: { min: 4, max: 63, default: 10, scale: 1 },
+        framesize: { values: [
+            { value: 4, label: "QVGA 320×240" },
+            { value: 6, label: "SVGA 800×600" },
+            { value: 8, label: "VGA 640×480" },
+            { value: 10, label: "UXGA 1600×1200" },
+        ], default: 10 },
+        hasPsram: true,
+    },
+    pi: {
+        brightness: { min: -100, max: 100, default: 0, scale: 1 },
+        contrast: { min: -100, max: 100, default: 0, scale: 1 },
+        saturation: { min: -100, max: 100, default: 0, scale: 1 },
+        // ae_level mapped to exposure for Pi
+        exposure: { min: -13, max: -1, default: -6, scale: 1, label: "Exposition" },
+        // gainceiling mapped to ISO for Pi
+        iso: { min: 100, max: 800, default: 100, scale: 1, label: "ISO" },
+        quality: { min: 1, max: 100, default: 70, scale: 1, label: "Qualité JPEG" },
+        framesize: { values: [
+            { value: "640x480", label: "640×480 (Pi Zero)" },
+            { value: "1280x720", label: "1280×720 (HD)" },
+            { value: "1920x1080", label: "1920×1080 (Full HD)" },
+        ], default: "640x480" },
+        hasPsram: false,
+    },
+};
+
+const FIXED_CAMERA_SETTINGS_ESP32 = {
+    brightness: -1,
+    contrast: 1,
+    saturation: 0,
+    quality: 4,
+    framesize: 10,
+};
+
 const getProxyBaseUrl = () => {
     if (typeof window === "undefined") return "";
     if (process.env.NODE_ENV !== "production") {
@@ -44,6 +87,7 @@ export default function PondVideoCard({ streamUrl }) {
 
     const [status, setStatus] = useState("sleeping");
     const [deviceInfo, setDeviceInfo] = useState(null);
+    const [deviceType, setDeviceType] = useState("esp32"); // "esp32" or "pi"
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [waking, setWaking] = useState(false);
     const [showControls, setShowControls] = useState(false);
@@ -51,6 +95,11 @@ export default function PondVideoCard({ streamUrl }) {
     const [streamMode, setStreamMode] = useState("ws");
     const [fps, setFps] = useState(0);
     const [streamError, setStreamError] = useState(false);
+    const [isMobileViewport, setIsMobileViewport] = useState(false);
+    const [showFullscreenOverlay, setShowFullscreenOverlay] = useState(true);
+
+    // Get camera config based on device type
+    const camConfig = CAMERA_CONFIGS[deviceType] || CAMERA_CONFIGS.esp32;
 
     const canvasRef = useRef(null);
     const imgRef = useRef(null);
@@ -65,6 +114,7 @@ export default function PondVideoCard({ streamUrl }) {
     const checkAbortRef = useRef(null);
     const wsReconnectTimerRef = useRef(null);
     const wsReconnectDelayRef = useRef(1000);
+    const fullscreenOverlayTimerRef = useRef(null);
     useEffect(() => { statusRef.current = status; }, [status]);
 
     useEffect(() => {
@@ -73,6 +123,29 @@ export default function PondVideoCard({ streamUrl }) {
             fpsCountRef.current = 0;
         }, 1000);
         return () => clearInterval(fpsTimerRef.current);
+    }, []);
+
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const mediaQuery = window.matchMedia("(max-width: 768px)");
+        const updateViewport = (event) => {
+            setIsMobileViewport(event.matches);
+        };
+
+        setIsMobileViewport(mediaQuery.matches);
+        if (mediaQuery.addEventListener) {
+            mediaQuery.addEventListener("change", updateViewport);
+        } else {
+            mediaQuery.addListener(updateViewport);
+        }
+
+        return () => {
+            if (mediaQuery.removeEventListener) {
+                mediaQuery.removeEventListener("change", updateViewport);
+            } else {
+                mediaQuery.removeListener(updateViewport);
+            }
+        };
     }, []);
 
     const checkCamera = useCallback(async () => {
@@ -85,6 +158,9 @@ export default function PondVideoCard({ streamUrl }) {
             if (r.ok) {
                 const info = await r.json();
                 setDeviceInfo(info);
+                // Detect device type: ESP32 has 'psram' or 'free_heap', Pi doesn't
+                const detectedType = (info.psram !== undefined || info.free_heap !== undefined) ? "esp32" : "pi";
+                setDeviceType(detectedType);
                 if (info.standby) setStatus("standby");
                 else if (info.camera_awake) setStatus("awake");
                 else setStatus("sleeping");
@@ -169,6 +245,30 @@ export default function PondVideoCard({ streamUrl }) {
         connect();
     }, []);
 
+    const applyFixedCamSettings = useCallback(async () => {
+        const params = new URLSearchParams();
+        const settings = deviceType === "pi" ? {
+            brightness: camConfig.brightness.default,
+            contrast: camConfig.contrast.default,
+            saturation: camConfig.saturation.default,
+            exposure: camConfig.exposure.default,
+            iso: camConfig.iso.default,
+            quality: camConfig.quality.default,
+            framesize: camConfig.framesize.default,
+        } : FIXED_CAMERA_SETTINGS_ESP32;
+        
+        Object.entries(settings).forEach(([key, value]) => {
+            params.set(key, String(value));
+        });
+
+        try {
+            await fetch(`${resolvedUrl}/config?${params.toString()}`, { method: "POST", signal: AbortSignal.timeout(5000) });
+            setCamSettings(previous => ({ ...(previous || {}), ...settings }));
+        } catch {
+            // Ignore transient network/config errors
+        }
+    }, [resolvedUrl, deviceType, camConfig]);
+
     const handleWake = useCallback(async () => {
         if (wakeAbortRef.current) wakeAbortRef.current.abort();
         const controller = new AbortController();
@@ -178,6 +278,7 @@ export default function PondVideoCard({ streamUrl }) {
         try {
             const r = await fetch(resolvedUrl + "/wake", { method: "POST", signal: controller.signal });
             if (r.ok) {
+                await applyFixedCamSettings();
                 setStatus("awake");
             } else {
                 const data = await r.json().catch(() => ({}));
@@ -190,7 +291,7 @@ export default function PondVideoCard({ streamUrl }) {
             wakeAbortRef.current = null;
             setWaking(false);
         }
-    }, [resolvedUrl]);
+    }, [applyFixedCamSettings, resolvedUrl]);
 
     const handleSleep = useCallback(async () => {
         stopWsStream();
@@ -231,20 +332,82 @@ export default function PondVideoCard({ streamUrl }) {
         return () => window.removeEventListener("beforeunload", onUnload);
     }, [resolvedUrl]);
 
-    const toggleFullscreen = useCallback(() => {
-        if (!containerRef.current) return;
-        if (!document.fullscreenElement) {
-            containerRef.current.requestFullscreen().catch(() => {});
-        } else {
-            document.exitFullscreen().catch(() => {});
+    const requestLandscapeOrientation = useCallback(async () => {
+        if (typeof screen === "undefined" || !screen.orientation?.lock) return;
+        try {
+            await screen.orientation.lock("landscape");
+        } catch {
+            // Not supported or blocked by browser policy
         }
     }, []);
 
+    const releaseOrientationLock = useCallback(() => {
+        if (typeof screen === "undefined" || !screen.orientation?.unlock) return;
+        screen.orientation.unlock();
+    }, []);
+
+    const clearFullscreenOverlayTimer = useCallback(() => {
+        if (fullscreenOverlayTimerRef.current) {
+            clearTimeout(fullscreenOverlayTimerRef.current);
+            fullscreenOverlayTimerRef.current = null;
+        }
+    }, []);
+
+    const scheduleFullscreenOverlayHide = useCallback(() => {
+        clearFullscreenOverlayTimer();
+        fullscreenOverlayTimerRef.current = setTimeout(() => {
+            setShowFullscreenOverlay(false);
+            fullscreenOverlayTimerRef.current = null;
+        }, 3000);
+    }, [clearFullscreenOverlayTimer]);
+
+    const toggleFullscreen = useCallback(async () => {
+        if (!containerRef.current) return;
+        if (!document.fullscreenElement) {
+            try {
+                await containerRef.current.requestFullscreen();
+                await requestLandscapeOrientation();
+            } catch {
+                // Ignore fullscreen/orientation failures
+            }
+        } else {
+            document.exitFullscreen().catch(() => {});
+        }
+    }, [requestLandscapeOrientation]);
+
     useEffect(() => {
-        const handler = () => setIsFullscreen(!!document.fullscreenElement);
+        const handler = () => {
+            const fullscreen = !!document.fullscreenElement;
+            setIsFullscreen(fullscreen);
+            if (fullscreen) {
+                setShowFullscreenOverlay(true);
+            }
+            if (!fullscreen) {
+                releaseOrientationLock();
+            }
+        };
         document.addEventListener("fullscreenchange", handler);
         return () => document.removeEventListener("fullscreenchange", handler);
-    }, []);
+    }, [releaseOrientationLock]);
+
+    useEffect(() => {
+        if (isFullscreen && isMobileViewport && showFullscreenOverlay) {
+            scheduleFullscreenOverlayHide();
+        } else {
+            clearFullscreenOverlayTimer();
+        }
+
+        return () => {
+            clearFullscreenOverlayTimer();
+        };
+    }, [isFullscreen, isMobileViewport, showFullscreenOverlay, scheduleFullscreenOverlayHide, clearFullscreenOverlayTimer]);
+
+    useEffect(() => {
+        return () => {
+            clearFullscreenOverlayTimer();
+            releaseOrientationLock();
+        };
+    }, [releaseOrientationLock, clearFullscreenOverlayTimer]);
 
     const loadCamSettings = useCallback(async () => {
         if (configAbortRef.current) configAbortRef.current.abort();
@@ -281,11 +444,20 @@ export default function PondVideoCard({ streamUrl }) {
     const currentStatus = statusConfig[waking ? "waking" : status] || statusConfig.offline;
     const isActive = status === "streaming" || status === "awake";
     const isStreaming = status === "streaming";
+    const hasImmersiveMobileFullscreen = isFullscreen && isMobileViewport;
+    const hideFullscreenChrome = hasImmersiveMobileFullscreen && !showFullscreenOverlay;
+
+    const revealFullscreenOverlay = useCallback(() => {
+        if (!hasImmersiveMobileFullscreen) return;
+        setShowFullscreenOverlay(true);
+        scheduleFullscreenOverlayHide();
+    }, [hasImmersiveMobileFullscreen, scheduleFullscreenOverlayHide]);
 
     return (
         <div ref={containerRef} className={`bg-poi-surface rounded-2xl shadow-sm border border-poi-sage/20 overflow-hidden ${isFullscreen ? "bg-black flex flex-col" : ""}`}>
 
             {/* ── Header ── */}
+            {!hideFullscreenChrome && (
             <div className="bg-gradient-to-r from-poi-ocean to-poi-sage px-5 py-4 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                     <h2 className="text-poi-surface font-semibold">Caméra Bassin</h2>
@@ -342,52 +514,124 @@ export default function PondVideoCard({ streamUrl }) {
                     )}
                 </div>
             </div>
+            )}
 
             {/* ── Camera controls panel ── */}
             {showControls && isActive && !isFullscreen && (
                 <div className="px-5 py-4 border-b border-poi-sage/10 bg-poi-ocean/5">
-                    <p className="text-xs font-semibold text-poi-ocean mb-3">Réglages caméra</p>
+                    <p className="text-xs font-semibold text-poi-ocean mb-3">
+                        Réglages caméra {deviceType === "pi" && <span className="text-poi-sage">(Pi)</span>}
+                    </p>
                     {!camSettings ? (
                         <p className="text-xs text-poi-text/50">Chargement...</p>
                     ) : (
                         <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-                            {[
-                                { key: "brightness",  label: "Luminosité",  min: -2, max: 2 },
-                                { key: "contrast",    label: "Contraste",   min: -2, max: 2 },
-                                { key: "saturation",  label: "Saturation",  min: -2, max: 2 },
-                                { key: "ae_level",    label: "Exposition",  min: -2, max: 2 },
-                                { key: "gainceiling", label: "Gain",        min: 0,  max: 6 },
-                                { key: "quality",     label: "Qualité JPEG (bas=meilleur)", min: 4, max: 63 },
-                            ].map(({ key, label, min, max }) => (
-                                <label key={key} className="flex flex-col gap-1">
+                            {/* Brightness */}
+                            <label className="flex flex-col gap-1">
+                                <span className="text-xs text-poi-text/60">
+                                    Luminosité <span className="font-mono text-poi-ocean">{camSettings.brightness ?? camConfig.brightness.default}</span>
+                                </span>
+                                <input type="range" min={camConfig.brightness.min} max={camConfig.brightness.max}
+                                    value={camSettings.brightness ?? camConfig.brightness.default}
+                                    onChange={e => applyCamSetting("brightness", e.target.value)}
+                                    className="w-full accent-poi-ocean" />
+                            </label>
+                            {/* Contrast */}
+                            <label className="flex flex-col gap-1">
+                                <span className="text-xs text-poi-text/60">
+                                    Contraste <span className="font-mono text-poi-ocean">{camSettings.contrast ?? camConfig.contrast.default}</span>
+                                </span>
+                                <input type="range" min={camConfig.contrast.min} max={camConfig.contrast.max}
+                                    value={camSettings.contrast ?? camConfig.contrast.default}
+                                    onChange={e => applyCamSetting("contrast", e.target.value)}
+                                    className="w-full accent-poi-ocean" />
+                            </label>
+                            {/* Saturation */}
+                            <label className="flex flex-col gap-1">
+                                <span className="text-xs text-poi-text/60">
+                                    Saturation <span className="font-mono text-poi-ocean">{camSettings.saturation ?? camConfig.saturation.default}</span>
+                                </span>
+                                <input type="range" min={camConfig.saturation.min} max={camConfig.saturation.max}
+                                    value={camSettings.saturation ?? camConfig.saturation.default}
+                                    onChange={e => applyCamSetting("saturation", e.target.value)}
+                                    className="w-full accent-poi-ocean" />
+                            </label>
+                            {/* Exposure / AE Level - different param names */}
+                            {deviceType === "pi" ? (
+                                <label className="flex flex-col gap-1">
                                     <span className="text-xs text-poi-text/60">
-                                        {label} <span className="font-mono text-poi-ocean">{camSettings[key]}</span>
+                                        {camConfig.exposure.label} <span className="font-mono text-poi-ocean">{camSettings.exposure ?? camConfig.exposure.default}</span>
                                     </span>
-                                    <input type="range" min={min} max={max} value={camSettings[key] ?? 0}
-                                        onChange={e => applyCamSetting(key, e.target.value)}
+                                    <input type="range" min={camConfig.exposure.min} max={camConfig.exposure.max}
+                                        value={camSettings.exposure ?? camConfig.exposure.default}
+                                        onChange={e => applyCamSetting("exposure", e.target.value)}
                                         className="w-full accent-poi-ocean" />
                                 </label>
-                            ))}
+                            ) : (
+                                <label className="flex flex-col gap-1">
+                                    <span className="text-xs text-poi-text/60">
+                                        Exposition <span className="font-mono text-poi-ocean">{camSettings.ae_level ?? camConfig.ae_level.default}</span>
+                                    </span>
+                                    <input type="range" min={camConfig.ae_level.min} max={camConfig.ae_level.max}
+                                        value={camSettings.ae_level ?? camConfig.ae_level.default}
+                                        onChange={e => applyCamSetting("ae_level", e.target.value)}
+                                        className="w-full accent-poi-ocean" />
+                                </label>
+                            )}
+                            {/* Gain / ISO - different param names */}
+                            {deviceType === "pi" ? (
+                                <label className="flex flex-col gap-1">
+                                    <span className="text-xs text-poi-text/60">
+                                        {camConfig.iso.label} <span className="font-mono text-poi-ocean">{camSettings.iso ?? camConfig.iso.default}</span>
+                                    </span>
+                                    <input type="range" min={camConfig.iso.min} max={camConfig.iso.max}
+                                        value={camSettings.iso ?? camConfig.iso.default}
+                                        onChange={e => applyCamSetting("iso", e.target.value)}
+                                        className="w-full accent-poi-ocean" />
+                                </label>
+                            ) : (
+                                <label className="flex flex-col gap-1">
+                                    <span className="text-xs text-poi-text/60">
+                                        Gain <span className="font-mono text-poi-ocean">{camSettings.gainceiling ?? camConfig.gainceiling.default}</span>
+                                    </span>
+                                    <input type="range" min={camConfig.gainceiling.min} max={camConfig.gainceiling.max}
+                                        value={camSettings.gainceiling ?? camConfig.gainceiling.default}
+                                        onChange={e => applyCamSetting("gainceiling", e.target.value)}
+                                        className="w-full accent-poi-ocean" />
+                                </label>
+                            )}
+                            {/* Quality */}
+                            <label className="flex flex-col gap-1">
+                                <span className="text-xs text-poi-text/60">
+                                    {deviceType === "pi" ? "Qualité JPEG (haut=meilleur)" : "Qualité JPEG (bas=meilleur)"}
+                                    <span className="font-mono text-poi-ocean">{camSettings.quality ?? camConfig.quality.default}</span>
+                                </span>
+                                <input type="range" min={camConfig.quality.min} max={camConfig.quality.max}
+                                    value={camSettings.quality ?? camConfig.quality.default}
+                                    onChange={e => applyCamSetting("quality", e.target.value)}
+                                    className="w-full accent-poi-ocean" />
+                            </label>
+                            {/* Resolution */}
                             <label className="flex flex-col gap-1">
                                 <span className="text-xs text-poi-text/60">Résolution</span>
-                                <select value={camSettings.framesize ?? 6}
+                                <select value={camSettings.framesize ?? camConfig.framesize.default}
                                     onChange={e => applyCamSetting("framesize", e.target.value)}
                                     className="text-xs rounded border border-poi-sage/30 bg-poi-surface px-2 py-1 text-poi-text">
-                                    {FRAME_SIZES.map(f => (
+                                    {camConfig.framesize.values.map(f => (
                                         <option key={f.value} value={f.value}>{f.label}</option>
                                     ))}
                                 </select>
                             </label>
                             <div className="flex gap-4 items-center pt-1">
                                 <label className="flex items-center gap-2 text-xs text-poi-text/60 cursor-pointer">
-                                    <input type="checkbox" checked={camSettings.vflip === 1}
+                                    <input type="checkbox" checked={camSettings.vflip === 1 || camSettings.vflip === true}
                                         onChange={e => applyCamSetting("vflip", e.target.checked ? 1 : 0)}
                                         className="accent-poi-ocean" />
                                     Retourner V
                                 </label>
                                 <label className="flex items-center gap-2 text-xs text-poi-text/60 cursor-pointer">
-                                    <input type="checkbox" checked={camSettings.hmirror === 1}
-                                        onChange={e => applyCamSetting("hmirror", e.target.checked ? 1 : 0)}
+                                    <input type="checkbox" checked={camSettings.hmirror === 1 || camSettings.hmirror === true || camSettings.hflip === 1 || camSettings.hflip === true}
+                                        onChange={e => applyCamSetting(deviceType === "pi" ? "hflip" : "hmirror", e.target.checked ? 1 : 0)}
                                         className="accent-poi-ocean" />
                                     Miroir H
                                 </label>
@@ -409,7 +653,23 @@ export default function PondVideoCard({ streamUrl }) {
             )}
 
             {/* ── Video area ── */}
-            <div className={`relative ${isFullscreen ? "flex-1 flex items-center justify-center bg-black" : "aspect-video bg-poi-ocean/5"}`}>
+            <div
+                className={`relative ${isFullscreen ? "flex-1 flex items-center justify-center bg-black" : "aspect-video bg-poi-ocean/5"} ${hasImmersiveMobileFullscreen ? "cursor-pointer" : ""}`}
+                onClick={() => {
+                    if (hasImmersiveMobileFullscreen) {
+                        if (hideFullscreenChrome) {
+                            revealFullscreenOverlay();
+                        } else {
+                            scheduleFullscreenOverlayHide();
+                        }
+                    }
+                }}
+                onPointerMove={() => {
+                    if (hasImmersiveMobileFullscreen && !hideFullscreenChrome) {
+                        scheduleFullscreenOverlayHide();
+                    }
+                }}
+            >
 
                 {/* WebSocket canvas */}
                 {isStreaming && streamMode === "ws" && (
@@ -490,10 +750,16 @@ export default function PondVideoCard({ streamUrl }) {
                         </div>
                     </div>
                 )}
+
+                {hideFullscreenChrome && (
+                    <div className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/50 text-white text-xs backdrop-blur-sm pointer-events-none">
+                        Touchez pour afficher les contrôles
+                    </div>
+                )}
             </div>
 
             {/* ── Footer ── */}
-            {deviceInfo && (
+            {deviceInfo && !hideFullscreenChrome && (
                 <div className="px-5 py-3 border-t border-poi-sage/10 flex items-center justify-between text-xs text-poi-text/50">
                     <span>{deviceInfo.device || "esp-pond-video"}</span>
                     <div className="flex items-center gap-3">
@@ -505,6 +771,11 @@ export default function PondVideoCard({ streamUrl }) {
                         {deviceInfo.standby && <span className="text-poi-ocean">🌙 Veille nocturne</span>}
                         {deviceInfo.wifi_rssi && <span>WiFi: {deviceInfo.wifi_rssi} dBm</span>}
                         {deviceInfo.free_heap && <span>RAM: {Math.round(deviceInfo.free_heap / 1024)} KB</span>}
+                        {deviceInfo.battery_percentage !== undefined && deviceInfo.battery_percentage >= 0 && (
+                            <span className={deviceInfo.battery_percentage < 20 ? "text-poi-terra" : ""}>
+                                🔋 {deviceInfo.battery_percentage}% ({deviceInfo.battery_voltage?.toFixed(2)}V)
+                            </span>
+                        )}
                         {deviceInfo.uptime !== undefined && (
                             <span>↑ {Math.floor(deviceInfo.uptime / 3600)}h{Math.floor((deviceInfo.uptime % 3600) / 60)}m</span>
                         )}
