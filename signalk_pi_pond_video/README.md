@@ -28,24 +28,57 @@ A lightweight video streaming server for **Raspberry Pi Zero WH** with **Camera 
 # Update system
 sudo apt update && sudo apt upgrade -y
 
-# Enable camera interface
-sudo raspi-config
-# Navigate to: Interface Options > Camera > Enable
-# Reboot when prompted
+# Camera is auto-detected on modern Pi OS (Bullseye/Bookworm)
+# First install libcamera tools if needed:
+sudo apt install -y libcamera-apps
+
+# Verify camera detection:
+libcamera-hello --list-cameras
+
+# If camera not detected, check ribbon cable orientation
+# (Blue/black side faces HDMI port)
+
+# On older Legacy OS only: sudo raspi-config -> Interface Options -> Camera
 ```
 
-### 2. Install Dependencies
+### 2. Install Git and Clone Repository
 
 ```bash
-# Install required packages
-sudo apt install -y python3-pip python3-picamera2 python3-flask python3-websocket
+# Install git
+sudo apt install -y git
 
-# Or install from requirements.txt
-cd ~/signalk_pi_pond_video
-pip3 install -r requirements.txt
+# Clone repository
+git clone https://github.com/laborima/signalk-esp-pond-sensor.git
+
+# Navigate to Pi video directory
+cd signalk-esp-pond-sensor/signalk_pi_pond_video
 ```
 
-### 3. Configure WiFi
+### 3. Install Dependencies
+
+Option A - Using install.sh (recommended):
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+Option B - Manual installation:
+
+```bash
+# Install system packages
+sudo apt install -y python3-pip python3-picamera2 python3-flask python3-yaml python3-pil libcamera-dev
+
+# Install Python packages
+pip3 install --user flask-socketio python-socketio eventlet
+
+# Copy files manually
+sudo mkdir -p /opt/signalk_pi_pond_video
+sudo cp *.py /opt/signalk_pi_pond_video/
+sudo cp config.yaml /opt/signalk_pi_pond_video/
+```
+
+### 4. Configure WiFi
 
 ```bash
 # Edit wpa_supplicant.conf
@@ -53,6 +86,7 @@ sudo nano /etc/wpa_supplicant/wpa_supplicant.conf
 ```
 
 Add your network:
+
 ```
 network={
     ssid="YOUR_WIFI_SSID"
@@ -61,16 +95,7 @@ network={
 }
 ```
 
-### 4. Copy Project Files
-
-```bash
-# Copy to /opt for system service
-git clone https://github.com/your-repo/signalk_pi_pond_video.git
-cd signalk_pi_pond_video
-sudo mkdir -p /opt/signalk_pi_pond_video
-sudo cp -r src/* /opt/signalk_pi_pond_video/
-sudo cp config.yaml /opt/signalk_pi_pond_video/
-```
+Then reboot: `sudo reboot`
 
 ### 5. Configure the Application
 
@@ -97,33 +122,16 @@ power:
     end_hour: 7
 ```
 
-### 6. Create System Service
+### 6. Start the Service
 
+If you used **install.sh** (Option A), the service is already created and enabled. Just start it:
 ```bash
-sudo nano /etc/systemd/system/signalk-pi-pond-video.service
+sudo systemctl start signalk-pi-pond-video
 ```
 
-Paste:
-```ini
-[Unit]
-Description=SignalK Pi Pond Video Streaming Server
-After=network.target
-
-[Service]
-Type=simple
-User=pi
-WorkingDirectory=/opt/signalk_pi_pond_video
-ExecStart=/usr/bin/python3 /opt/signalk_pi_pond_video/main.py
-Restart=always
-RestartSec=5
-Environment="PYTHONUNBUFFERED=1"
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
+If you did **manual installation** (Option B), create the service:
 ```bash
+sudo cp signalk-pi-pond-video.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable signalk-pi-pond-video
 sudo systemctl start signalk-pi-pond-video

@@ -22,18 +22,36 @@
 
 ## Software Installation (5 minutes)
 
-### 1. Enable Camera
+### 1. Check Camera (Auto-detected)
+
+Sur Raspberry Pi OS Bullseye/Bookworm, la caméra est détectée automatiquement :
+
 ```bash
-sudo raspi-config
-# Select: Interface Options -> Camera -> Enable
-# Reboot when prompted
+# Installer les outils libcamera (si pas déjà présents)
+sudo apt update
+sudo apt install -y libcamera-apps
+
+# Vérifier que la caméra est reconnue
+libcamera-hello --list-cameras
+
+# Si la caméra n'est pas détectée, vérifier le câble ribbon
+# (côté bleu/noir vers le port HDMI)
 ```
 
-### 2. Clone and Install
+Note : Sur les anciennes versions (Legacy), utilisez `sudo raspi-config` -> Interface Options -> Camera.
+
+### 2. Install Git and Clone
 ```bash
+# Install git if not present
+sudo apt update
+sudo apt install -y git
+
+# Clone repository
 cd ~
-git clone https://github.com/your-repo/signalk_pi_pond_video.git
-cd signalk_pi_pond_video
+git clone https://github.com/laborima/signalk-esp-pond-sensor.git
+cd signalk-esp-pond-sensor/signalk_pi_pond_video
+
+# Run installer
 chmod +x install.sh
 ./install.sh
 ```

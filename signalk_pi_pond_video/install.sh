@@ -9,6 +9,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="/opt/signalk_pi_pond_video"
 SERVICE_NAME="signalk-pi-pond-video"
+USER_NAME="$(whoami)"
 
 # Colors for output
 RED='\033[0;31m'
@@ -80,7 +81,7 @@ pip3 install --user \
 echo ""
 echo "Creating installation directory..."
 sudo mkdir -p "$INSTALL_DIR"
-sudo chown pi:pi "$INSTALL_DIR"
+sudo chown "$USER_NAME:$USER_NAME" "$INSTALL_DIR"
 
 # Copy files
 echo ""
@@ -98,26 +99,27 @@ chmod +x "$INSTALL_DIR/camera_manager.py"
 # Add user to video group
 echo ""
 echo "Adding user to video group..."
-sudo usermod -a -G video pi
+sudo usermod -a -G video "$USER_NAME"
 
 # Create log directory
 echo ""
 echo "Creating log directory..."
 sudo mkdir -p /var/log
 sudo touch /var/log/signalk_pi_pond_video.log
-sudo chown pi:pi /var/log/signalk_pi_pond_video.log
+sudo chown "$USER_NAME:$USER_NAME" /var/log/signalk_pi_pond_video.log
 
 # Install systemd service
 echo ""
 echo "Installing systemd service..."
-sudo cp -v "$SCRIPT_DIR/signalk-pi-pond-video.service" /etc/systemd/system/
+# Update service file with current user
+sed "s/^User=pi$/User=$USER_NAME/" "$SCRIPT_DIR/signalk-pi-pond-video.service" | sudo tee /etc/systemd/system/signalk-pi-pond-video.service > /dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"
 
 # Create log rotation config
 echo ""
 echo "Setting up log rotation..."
-sudo tee /etc/logrotate.d/signalk-pi-pond-video > /dev/null << 'EOF'
+sudo tee /etc/logrotate.d/signalk-pi-pond-video > /dev/null << EOF
 /var/log/signalk_pi_pond_video.log {
     daily
     missingok
@@ -125,7 +127,7 @@ sudo tee /etc/logrotate.d/signalk-pi-pond-video > /dev/null << 'EOF'
     compress
     delaycompress
     notifempty
-    create 644 pi pi
+    create 644 $USER_NAME $USER_NAME
 }
 EOF
 
