@@ -29,11 +29,13 @@ A lightweight video streaming server for **Raspberry Pi Zero WH** with **Camera 
 sudo apt update && sudo apt upgrade -y
 
 # Camera is auto-detected on modern Pi OS (Bullseye/Bookworm)
-# First install libcamera tools if needed:
-sudo apt install -y libcamera-apps
+# Install libcamera tools:
+sudo apt install -y libcamera-dev libcamera-tools python3-picamera2
 
 # Verify camera detection:
-libcamera-hello --list-cameras
+# Pi OS 12 (Bookworm): rpicam-hello
+# Pi OS 11 (Bullseye): libcamera-hello
+rpicam-hello --list-cameras 2>/dev/null || libcamera-hello --list-cameras 2>/dev/null
 
 # If camera not detected, check ribbon cable orientation
 # (Blue/black side faces HDMI port)

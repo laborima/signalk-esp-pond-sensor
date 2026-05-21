@@ -27,12 +27,14 @@
 Sur Raspberry Pi OS Bullseye/Bookworm, la caméra est détectée automatiquement :
 
 ```bash
-# Installer les outils libcamera (si pas déjà présents)
+# Vérifier que les outils libcamera sont installés
 sudo apt update
-sudo apt install -y libcamera-apps
+sudo apt install -y libcamera-dev libcamera-tools python3-picamera2
 
 # Vérifier que la caméra est reconnue
-libcamera-hello --list-cameras
+# Pi OS 12 (Bookworm): rpicam-hello
+# Pi OS 11 (Bullseye): libcamera-hello
+rpicam-hello --list-cameras 2>/dev/null || libcamera-hello --list-cameras 2>/dev/null
 
 # Si la caméra n'est pas détectée, vérifier le câble ribbon
 # (côté bleu/noir vers le port HDMI)

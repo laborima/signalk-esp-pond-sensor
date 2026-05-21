@@ -41,10 +41,18 @@ fi
 # Check for camera
 echo ""
 echo "Checking camera module..."
-if ! libcamera-hello --list-cameras 2>/dev/null | grep -q "Available"; then
+CAMERA_OK=false
+# Pi OS 12 (Bookworm): rpicam-hello, Pi OS 11 (Bullseye): libcamera-hello
+if rpicam-hello --list-cameras 2>/dev/null | grep -q "Available"; then
+    CAMERA_OK=true
+elif libcamera-hello --list-cameras 2>/dev/null | grep -q "Available"; then
+    CAMERA_OK=true
+fi
+
+if [ "$CAMERA_OK" = false ]; then
     echo -e "${YELLOW}Warning: No camera detected${NC}"
     echo "Please ensure Camera Module v3 is properly connected"
-    echo "and enabled via 'sudo raspi-config' -> Interface Options -> Camera"
+    echo "Blue side of ribbon cable faces HDMI port"
 else
     echo -e "${GREEN}  Camera detected${NC}"
 fi
@@ -63,7 +71,11 @@ sudo apt install -y \
     python3-flask \
     python3-yaml \
     python3-pil \
-    libcamera-dev
+    libcamera-dev \
+    libcamera-tools
+
+# Reload PATH after apt installs
+hash -r 2>/dev/null || true
 
 # Install Python packages via pip for newer versions
 echo ""
