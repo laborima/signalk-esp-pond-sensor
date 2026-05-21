@@ -178,14 +178,35 @@ class CameraManager:
                     preexec_fn=os.setsid
                 )
                 
-                # Wait for rpicam-vid to start listening
-                time.sleep(2)
+                # Wait for rpicam-vid to start listening (up to 10 seconds)
+                logging.info("Waiting for rpicam-vid to start listening...")
+                port_ready = False
+                for i in range(20):
+                    time.sleep(0.5)
+                    # Check if process is still running
+                    if rpicam_proc.poll() is not None:
+                        logging.error("rpicam-vid exited during startup")
+                        self._cleanup_process(rpicam_proc)
+                        return False
+                    # Check if port is listening
+                    import socket
+                    try:
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(1)
+                        result = sock.connect_ex(('127.0.0.1', self._rtsp_port))
+                        sock.close()
+                        if result == 0:
+                            port_ready = True
+                            break
+                    except:
+                        pass
                 
-                # Check if rpicam-vid is running
-                if rpicam_proc.poll() is not None:
-                    logging.error("rpicam-vid exited immediately")
+                if not port_ready:
+                    logging.error(f"rpicam-vid failed to open port {self._rtsp_port}")
                     self._cleanup_process(rpicam_proc)
                     return False
+                
+                logging.info(f"rpicam-vid listening on port {self._rtsp_port}")
                 
                 # Build ffmpeg command to read TCP and create HLS
                 # rpicam-vid runs as TCP server with --listen, ffmpeg connects as client
