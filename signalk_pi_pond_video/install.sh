@@ -71,7 +71,7 @@ sudo apt install -y \
     python3-yaml \
     libcamera-dev \
     libcamera-tools \
-    ffmpeg  # For HLS streaming support
+    ffmpeg  # Required for HLS streaming
 
 # Reload PATH after apt installs
 hash -r 2>/dev/null || true
@@ -81,13 +81,6 @@ echo ""
 echo "Installing Python packages..."
 sudo pip3 install --break-system-packages flask 2>/dev/null || \
 sudo pip3 install flask
-
-# Note: mediamtx (RTSP/HLS server) should be installed separately
-# Download from: https://github.com/bluenviron/mediamtx/releases
-echo ""
-echo "Note: For full HLS streaming support, install mediamtx:"
-echo "  wget https://github.com/bluenviron/mediamtx/releases/download/v1.6.0/mediamtx_v1.6.0_linux_armv7.tar.gz"
-echo "  sudo tar -xzf mediamtx_v*.tar.gz -C /usr/local/bin/"
 
 # Create installation directory
 echo ""
