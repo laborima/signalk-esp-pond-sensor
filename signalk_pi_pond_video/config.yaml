@@ -1,0 +1,44 @@
+# SignalK Pi Pond Video Configuration
+# Raspberry Pi Zero WH with Camera Module v3
+
+device:
+  name: "pi-pond-cam"
+  stream_port: 8080
+  # Host to bind to (0.0.0.0 for all interfaces)
+  host: "0.0.0.0"
+
+camera:
+  # Resolution: 640x480, 1280x720, 1920x1080
+  resolution: "1280x720"
+  # Framerate: 10, 15, 20, 30
+  framerate: 15
+  # JPEG quality: 1-100
+  jpeg_quality: 85
+  # Camera rotation: 0, 90, 180, 270
+  rotation: 180
+  # Horizontal flip
+  hflip: false
+  # Vertical flip
+  vflip: true
+  # Auto white balance
+  awb_mode: "auto"
+  # Exposure mode
+  exposure_mode: "auto"
+  # Metering mode
+  meter_mode: "average"
+
+power:
+  # Auto-sleep after inactivity (seconds)
+  auto_sleep_timeout: 600
+  # Night standby mode
+  night_standby:
+    enabled: true
+    # Start hour (24h format)
+    start_hour: 22
+    # End hour (24h format)
+    end_hour: 7
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_file: "/var/log/signalk_pi_pond_video.log"

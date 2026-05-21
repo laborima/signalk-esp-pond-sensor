@@ -1,0 +1,18 @@
+# SignalK Pi Pond Video - Python Dependencies
+# Install with: pip3 install -r requirements.txt
+
+# Web framework
+Flask>=2.3.0
+
+# WebSocket support
+Flask-SocketIO>=5.3.0
+python-socketio>=5.8.0
+
+# Camera library (RPi Camera Module v3)
+picamera2>=0.3.12
+
+# Async server
+eventlet>=0.33.0
+
+# YAML configuration
+PyYAML>=6.0
