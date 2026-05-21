@@ -61,6 +61,9 @@ class CameraManager:
         """
         self.config = config
         self._rpicam_process: Optional[subprocess.Popen] = None
+        self._ffmpeg_process: Optional[subprocess.Popen] = None
+        self._http_thread = None
+        self._hls_dir = None
         self._is_awake = False
         self._is_initialized = False
         self._lock = Lock()
@@ -112,7 +115,7 @@ class CameraManager:
     
     def wake(self) -> bool:
         """
-        Wake up and start H.264 streaming via rpicam-vid.
+        Wake up and start H.264 streaming via rpicam-vid + ffmpeg HLS.
         
         @return: True if camera successfully initialized
         """
@@ -121,7 +124,7 @@ class CameraManager:
                 return True
             
             try:
-                logging.info("Starting H.264 streaming...")
+                logging.info("Starting H.264 streaming with integrated HLS...")
                 
                 resolution = self._get_resolution()
                 width, height = resolution
@@ -131,8 +134,12 @@ class CameraManager:
                 hflip = self._settings.get('hflip', 0)
                 vflip = self._settings.get('vflip', 0)
                 
-                # Build rpicam-vid command for hardware H.264 encoding
-                cmd = [
+                # Create HLS output directory
+                hls_dir = "/tmp/hls"
+                os.makedirs(hls_dir, exist_ok=True)
+                
+                # Build rpicam-vid command - outputs to FIFO/pipe for ffmpeg
+                rpicam_cmd = [
                     'rpicam-vid',
                     '-t', '0',  # Run indefinitely
                     '--width', str(width),
@@ -140,54 +147,129 @@ class CameraManager:
                     '--framerate', str(framerate),
                     '--bitrate', str(bitrate),
                     '--codec', 'h264',
-                    '--inline',  # For HLS compatibility
-                    '--listen', '-o', f'tcp://0.0.0.0:{self._rtsp_port}',  # TCP output for mediamtx
+                    '--inline',
+                    '-o', '-',  # Output to stdout for ffmpeg
                 ]
                 
                 # Add rotation if needed
                 if rotation == 180:
-                    cmd.extend(['--rotation', '180'])
+                    rpicam_cmd.extend(['--rotation', '180'])
                 elif rotation == 90:
-                    cmd.extend(['--rotation', '90'])
+                    rpicam_cmd.extend(['--rotation', '90'])
                 elif rotation == 270:
-                    cmd.extend(['--rotation', '270'])
+                    rpicam_cmd.extend(['--rotation', '270'])
                 
                 # Add flips
                 if hflip:
-                    cmd.append('--hflip')
+                    rpicam_cmd.append('--hflip')
                 if vflip:
-                    cmd.append('--vflip')
+                    rpicam_cmd.append('--vflip')
                 
-                logging.info(f"Starting rpicam-vid: {' '.join(cmd)}")
+                # Build ffmpeg command to convert H264 to HLS
+                ffmpeg_cmd = [
+                    'ffmpeg',
+                    '-i', 'pipe:0',  # Read from stdin
+                    '-c:v', 'copy',  # Copy video stream (no re-encode)
+                    '-f', 'hls',
+                    '-hls_time', '2',  # 2 second segments
+                    '-hls_list_size', '3',  # Keep 3 segments
+                    '-hls_flags', 'delete_segments+omit_endlist',
+                    '-hls_allow_cache', '0',
+                    f'{hls_dir}/index.m3u8'
+                ]
+                
+                logging.info(f"Starting rpicam-vid | ffmpeg pipeline")
                 
                 # Start rpicam-vid process
-                self._rpicam_process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
+                rpicam_proc = subprocess.Popen(
+                    rpicam_cmd,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
-                    preexec_fn=os.setsid  # Create new process group for clean shutdown
+                    preexec_fn=os.setsid
                 )
                 
-                # Wait a moment for stream to start
-                time.sleep(2)
+                # Start ffmpeg process reading from rpicam-vid
+                ffmpeg_proc = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdin=rpicam_proc.stdout,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    preexec_fn=os.setsid
+                )
                 
-                # Check if process is running
-                if self._rpicam_process.poll() is not None:
-                    logging.error("rpicam-vid exited immediately")
-                    self._cleanup_camera()
+                # Close rpicam stdout in parent (ffmpeg now owns it)
+                rpicam_proc.stdout.close()
+                
+                # Wait for HLS files to be created
+                time.sleep(3)
+                
+                # Check if processes are running
+                if rpicam_proc.poll() is not None or ffmpeg_proc.poll() is not None:
+                    logging.error("Stream processes exited immediately")
+                    self._cleanup_process(rpicam_proc)
+                    self._cleanup_process(ffmpeg_proc)
                     return False
+                
+                self._rpicam_process = rpicam_proc
+                self._ffmpeg_process = ffmpeg_proc
+                self._hls_dir = hls_dir
+                
+                # Start HTTP server for HLS files
+                self._start_hls_server()
                 
                 self._is_awake = True
                 self._is_initialized = True
                 
-                logging.info(f"H.264 streaming active - {width}x{height}@{framerate}fps, "
-                           f"bitrate={bitrate/1000000:.1f}Mbps on port {self._rtsp_port}")
+                logging.info(f"H.264 streaming active - {width}x{height}@{framerate}fps")
+                logging.info(f"HLS available at: http://<pi-ip>:{self._hls_port}/live/index.m3u8")
                 return True
                 
             except Exception as e:
                 logging.error(f"Camera wake failed: {e}")
                 self._cleanup_camera()
                 return False
+    
+    def _start_hls_server(self):
+        """Start simple HTTP server for HLS files."""
+        import http.server
+        import socketserver
+        import threading
+        
+        class HLSHandler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, directory=None, **kwargs):
+                self.directory = directory
+                super().__init__(*args, **kwargs)
+            
+            def do_GET(self):
+                # Map /live/ to HLS directory
+                if self.path.startswith('/live/'):
+                    self.path = self.path[5:]  # Remove /live/ prefix
+                super().do_GET()
+            
+            def log_message(self, format, *args):
+                # Suppress HTTP logging
+                pass
+        
+        def serve():
+            os.chdir(self._hls_dir)
+            with socketserver.TCPServer(("0.0.0.0", self._hls_port), HLSHandler) as httpd:
+                httpd.serve_forever()
+        
+        self._http_thread = threading.Thread(target=serve, daemon=True)
+        self._http_thread.start()
+        logging.info(f"HLS HTTP server started on port {self._hls_port}")
+    
+    def _cleanup_process(self, proc):
+        """Clean up a single process."""
+        if proc:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                proc.wait(timeout=2)
+            except:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except:
+                    pass
     
     def sleep(self) -> None:
         """Stop H.264 streaming and release resources."""
@@ -201,20 +283,19 @@ class CameraManager:
             logging.info("Camera sleeping")
     
     def _cleanup_camera(self):
-        """Clean up rpicam-vid process."""
-        try:
-            if self._rpicam_process:
-                # Terminate the process group (rpicam-vid + children)
-                os.killpg(os.getpgid(self._rpicam_process.pid), signal.SIGTERM)
-                try:
-                    self._rpicam_process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    # Force kill if not terminated
-                    os.killpg(os.getpgid(self._rpicam_process.pid), signal.SIGKILL)
-        except Exception as e:
-            logging.warning(f"Error during camera cleanup: {e}")
-        finally:
+        """Clean up rpicam-vid, ffmpeg processes and HTTP server."""
+        # Clean up rpicam-vid process
+        if hasattr(self, '_rpicam_process') and self._rpicam_process:
+            self._cleanup_process(self._rpicam_process)
             self._rpicam_process = None
+        
+        # Clean up ffmpeg process
+        if hasattr(self, '_ffmpeg_process') and self._ffmpeg_process:
+            self._cleanup_process(self._ffmpeg_process)
+            self._ffmpeg_process = None
+        
+        # HTTP thread will stop automatically (daemon thread)
+        self._http_thread = None
     
     def capture_frame(self) -> Optional[bytes]:
         """
@@ -329,9 +410,9 @@ class CameraManager:
     
     def get_stream_urls(self) -> Dict[str, str]:
         """
-        Get RTSP and HLS stream URLs.
+        Get HLS stream URL.
         
-        @return: Dictionary with 'rtsp' and 'hls' URLs
+        @return: Dictionary with 'hls' URL
         """
         # Get Pi's IP address
         import socket
@@ -344,9 +425,7 @@ class CameraManager:
             ip = "127.0.0.1"
         
         return {
-            'rtsp': f"rtsp://{ip}:{self._rtsp_port}/live",
             'hls': f"http://{ip}:{self._hls_port}/live/index.m3u8",
-            'tcp': f"tcp://{ip}:{self._rtsp_port}",
         }
 
 
