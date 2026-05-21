@@ -77,14 +77,14 @@ sudo apt install -y \
 # Reload PATH after apt installs
 hash -r 2>/dev/null || true
 
-# Install Python packages via pip for newer versions
+# Install Python packages via pip for newer versions (system-wide for systemd)
 echo ""
 echo "Installing Python packages..."
-pip3 install --user --break-system-packages \
+sudo pip3 install --break-system-packages \
     flask-socketio \
     python-socketio \
     eventlet 2>/dev/null || \
-pip3 install --user \
+sudo pip3 install \
     flask-socketio \
     python-socketio \
     eventlet
