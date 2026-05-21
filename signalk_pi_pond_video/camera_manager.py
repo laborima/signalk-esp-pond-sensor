@@ -249,23 +249,26 @@ class CameraManager:
         import socketserver
         import threading
         
+        hls_dir = self._hls_dir
+        
         class HLSHandler(http.server.SimpleHTTPRequestHandler):
-            def __init__(self, *args, directory=None, **kwargs):
-                self.directory = directory
-                super().__init__(*args, **kwargs)
+            def translate_path(self, path):
+                # Map /live/xxx to /tmp/hls/xxx
+                if path.startswith('/live/'):
+                    path = path[6:]  # Remove /live/ prefix
+                # Join with HLS directory
+                return os.path.join(hls_dir, path.lstrip('/'))
             
-            def do_GET(self):
-                # Map /live/ to HLS directory
-                if self.path.startswith('/live/'):
-                    self.path = self.path[5:]  # Remove /live/ prefix
-                super().do_GET()
+            def end_headers(self):
+                # Add CORS headers for browser compatibility
+                self.send_header('Access-Control-Allow-Origin', '*')
+                super().end_headers()
             
             def log_message(self, format, *args):
                 # Suppress HTTP logging
                 pass
         
         def serve():
-            os.chdir(self._hls_dir)
             with socketserver.TCPServer(("0.0.0.0", self._hls_port), HLSHandler) as httpd:
                 httpd.serve_forever()
         
