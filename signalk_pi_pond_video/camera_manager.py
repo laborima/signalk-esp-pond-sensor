@@ -179,13 +179,31 @@ class CameraManager:
                     preexec_fn=os.setsid
                 )
                 
-                # Wait for rpicam-vid to start listening (up to 10 seconds)
-                logging.info("Waiting for rpicam-vid to initialize...")
-                time.sleep(3.5)
+                # Wait for rpicam-vid to start listening (up to 20 seconds for Pi Zero)
+                logging.info("Waiting for rpicam-vid to initialize and open port (non-destructive check)...")
+                port_ready = False
+                for i in range(40):
+                    time.sleep(0.5)
+                    # Check if process is still running
+                    if rpicam_proc.poll() is not None:
+                        logging.error("rpicam-vid exited during startup")
+                        self._rpicam_log.close()
+                        self._cleanup_process(rpicam_proc)
+                        return False
+                    
+                    # Non-destructive check: see if port 8554 is in LISTEN state using 'ss'
+                    try:
+                        import subprocess as sp
+                        # ss -H -tln sport = :8554
+                        out = sp.check_output(['ss', '-H', '-tln', f'sport = :{self._rtsp_port}']).decode()
+                        if len(out.strip()) > 0:
+                            port_ready = True
+                            break
+                    except Exception as e:
+                        pass
                 
-                # Check if process is still running
-                if rpicam_proc.poll() is not None:
-                    logging.error("rpicam-vid exited during startup")
+                if not port_ready:
+                    logging.error(f"rpicam-vid failed to open port {self._rtsp_port} within timeout")
                     self._rpicam_log.close()
                     self._cleanup_process(rpicam_proc)
                     return False
