@@ -168,45 +168,29 @@ class CameraManager:
                 if vflip:
                     rpicam_cmd.append('--vflip')
                 
-                logging.info(f"Starting rpicam-vid TCP on port {self._rtsp_port}")
+                logging.info(f"Starting rpicam-vid: {' '.join(rpicam_cmd)}")
                 
                 # Start rpicam-vid process (TCP server)
+                self._rpicam_log = open('/tmp/rpicam-vid.log', 'w')
                 rpicam_proc = subprocess.Popen(
                     rpicam_cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=self._rpicam_log,
+                    stderr=self._rpicam_log,
                     preexec_fn=os.setsid
                 )
                 
                 # Wait for rpicam-vid to start listening (up to 10 seconds)
-                logging.info("Waiting for rpicam-vid to start listening...")
-                port_ready = False
-                for i in range(20):
-                    time.sleep(0.5)
-                    # Check if process is still running
-                    if rpicam_proc.poll() is not None:
-                        logging.error("rpicam-vid exited during startup")
-                        self._cleanup_process(rpicam_proc)
-                        return False
-                    # Check if port is listening
-                    import socket
-                    try:
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        sock.settimeout(1)
-                        result = sock.connect_ex(('127.0.0.1', self._rtsp_port))
-                        sock.close()
-                        if result == 0:
-                            port_ready = True
-                            break
-                    except:
-                        pass
+                logging.info("Waiting for rpicam-vid to initialize...")
+                time.sleep(3.5)
                 
-                if not port_ready:
-                    logging.error(f"rpicam-vid failed to open port {self._rtsp_port}")
+                # Check if process is still running
+                if rpicam_proc.poll() is not None:
+                    logging.error("rpicam-vid exited during startup")
+                    self._rpicam_log.close()
                     self._cleanup_process(rpicam_proc)
                     return False
                 
-                logging.info(f"rpicam-vid listening on port {self._rtsp_port}")
+                logging.info(f"rpicam-vid successfully started and listening on port {self._rtsp_port}")
                 
                 # Build ffmpeg command to read TCP and create HLS
                 # rpicam-vid runs as TCP server with --listen, ffmpeg connects as client
@@ -222,13 +206,14 @@ class CameraManager:
                     f'{hls_dir}/index.m3u8'
                 ]
                 
-                logging.info("Starting ffmpeg for HLS transcoding")
+                logging.info(f"Starting ffmpeg: {' '.join(ffmpeg_cmd)}")
                 
                 # Start ffmpeg process
+                self._ffmpeg_log = open('/tmp/ffmpeg.log', 'w')
                 ffmpeg_proc = subprocess.Popen(
                     ffmpeg_cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=self._ffmpeg_log,
+                    stderr=self._ffmpeg_log,
                     preexec_fn=os.setsid
                 )
                 
@@ -238,6 +223,8 @@ class CameraManager:
                 # Check if ffmpeg is running
                 if ffmpeg_proc.poll() is not None:
                     logging.error("ffmpeg exited immediately")
+                    self._rpicam_log.close()
+                    self._ffmpeg_log.close()
                     self._cleanup_process(rpicam_proc)
                     self._cleanup_process(ffmpeg_proc)
                     return False
@@ -293,6 +280,21 @@ class CameraManager:
         if hasattr(self, '_ffmpeg_process') and self._ffmpeg_process:
             self._cleanup_process(self._ffmpeg_process)
             self._ffmpeg_process = None
+
+        # Close logs if open
+        if hasattr(self, '_rpicam_log') and self._rpicam_log:
+            try:
+                self._rpicam_log.close()
+            except:
+                pass
+            self._rpicam_log = None
+        
+        if hasattr(self, '_ffmpeg_log') and self._ffmpeg_log:
+            try:
+                self._ffmpeg_log.close()
+            except:
+                pass
+            self._ffmpeg_log = None
     
     def capture_frame(self) -> Optional[bytes]:
         """

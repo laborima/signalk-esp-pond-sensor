@@ -479,7 +479,8 @@ def setup_logging(config: Dict[str, Any]):
     logging.basicConfig(
         level=level,
         format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=handlers
+        handlers=handlers,
+        force=True
     )
 
 
