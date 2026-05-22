@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
+import Hls from "hls.js";
 
 /**
  * PondVideoCard – Live stream from ESP32-S3 Sense or Raspberry Pi camera.
@@ -336,41 +337,41 @@ export default function PondVideoCard({ streamUrl }) {
         if (streamMode === "hls" && hlsUrl && videoRef.current) {
             const video = videoRef.current;
             
-            // Dynamic import of hls.js to avoid SSR errors
-            import("hls.js").then(({ default: Hls }) => {
-                if (Hls.isSupported()) {
-                    hls = new Hls({
-                        enableWorker: true,
-                        lowLatencyMode: true,
-                        backBufferLength: 60
-                    });
-                    hls.loadSource(hlsUrl);
-                    hls.attachMedia(video);
-                    hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                        video.play().catch(e => console.log("HLS autoplay failed:", e));
-                    });
-                    hls.on(Hls.Events.ERROR, (event, data) => {
-                        if (data.fatal) {
-                            switch (data.type) {
-                                case Hls.ErrorTypes.NETWORK_ERROR:
-                                    console.log("HLS network error, retrying...", data);
-                                    hls.startLoad();
-                                    break;
-                                case Hls.ErrorTypes.MEDIA_ERROR:
-                                    console.log("HLS media error, trying recover...", data);
-                                    hls.recoverMediaError();
-                                    break;
-                                default:
-                                    console.log("Fatal HLS error:", data);
-                                    break;
-                            }
+            if (Hls.isSupported()) {
+                hls = new Hls({
+                    enableWorker: true,
+                    lowLatencyMode: true,
+                    backBufferLength: 60
+                });
+                hls.loadSource(hlsUrl);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    video.play().catch(e => console.log("HLS autoplay failed:", e));
+                });
+                hls.on(Hls.Events.ERROR, (event, data) => {
+                    if (data.fatal) {
+                        switch (data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                console.log("HLS network error, retrying...", data);
+                                hls.startLoad();
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                console.log("HLS media error, trying recover...", data);
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                console.log("Fatal HLS error:", data);
+                                break;
                         }
-                    });
-                } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-                    // For Safari (native support)
-                    video.src = hlsUrl;
-                }
-            });
+                    }
+                });
+            } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+                // For Safari (native support)
+                video.src = hlsUrl;
+                video.addEventListener('loadedmetadata', () => {
+                    video.play().catch(e => console.log("Native HLS autoplay failed:", e));
+                });
+            }
         }
         
         return () => {
