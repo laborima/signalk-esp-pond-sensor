@@ -150,7 +150,7 @@ class CameraManager:
                     '--bitrate', str(bitrate),
                     '--codec', 'h264',
                     '--inline',
-                    '--intra', '25',  # Force keyframe (I-frame) every 25 frames (1 second) for fast HLS startup
+                    '--intra', str(framerate),  # Force keyframe (I-frame) every 1 second for fast HLS startup
                     '--listen',  # Listen mode for TCP
                     '-o', f'tcp://0.0.0.0:{self._rtsp_port}',  # TCP output (VLC compatible)
                 ]
