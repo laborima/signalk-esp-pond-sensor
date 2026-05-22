@@ -361,7 +361,7 @@ def create_app(config: Dict[str, Any]) -> tuple:
             return response, 204
         
         from flask import send_from_directory
-        hls_dir = '/tmp/hls'
+        hls_dir = '/dev/shm/hls'
         
         try:
             response = send_from_directory(hls_dir, filename)

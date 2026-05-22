@@ -15,7 +15,7 @@ import logging
 import subprocess
 import signal
 from typing import Optional, Dict, Any, Tuple
-from threading import Lock
+from threading import RLock
 
 
 class CameraManager:
@@ -65,7 +65,7 @@ class CameraManager:
         self._hls_dir = None
         self._is_awake = False
         self._is_initialized = False
-        self._lock = Lock()
+        self._lock = RLock()
         self._settings = self.DEFAULT_SETTINGS.copy()
         self._fifo_path = "/tmp/camera_fifo"
         self._rtsp_port = config.get('rtsp_port', 8554)
@@ -136,8 +136,8 @@ class CameraManager:
                 hflip = self._settings.get('hflip', 0)
                 vflip = self._settings.get('vflip', 0)
                 
-                # Create HLS output directory
-                hls_dir = "/tmp/hls"
+                # Create HLS output directory in RAM disk to avoid SD card wear and slow I/O
+                hls_dir = "/dev/shm/hls"
                 os.makedirs(hls_dir, exist_ok=True)
                 
                 # Build rpicam-vid command - outputs TCP H.264 for VLC compatibility
@@ -214,6 +214,10 @@ class CameraManager:
                 # rpicam-vid runs as TCP server with --listen, ffmpeg connects as client
                 ffmpeg_cmd = [
                     'ffmpeg',
+                    '-fflags', 'nobuffer+discardcorrupt',
+                    '-flags', 'low_delay',
+                    '-probesize', '32',
+                    '-analyzeduration', '0',
                     '-i', f'tcp://127.0.0.1:{self._rtsp_port}',  # Connect to rpicam-vid TCP
                     '-c:v', 'copy',  # Copy video stream (no re-encode)
                     '-f', 'hls',
