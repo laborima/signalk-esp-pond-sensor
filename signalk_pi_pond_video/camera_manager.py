@@ -136,8 +136,8 @@ class CameraManager:
                 hflip = self._settings.get('hflip', 0)
                 vflip = self._settings.get('vflip', 0)
                 
-                # Create HLS output directory in RAM disk to avoid SD card wear and slow I/O
-                hls_dir = "/dev/shm/hls"
+                # Create HLS output directory in RAM disk (/tmp/hls is mounted as tmpfs)
+                hls_dir = "/tmp/hls"
                 os.makedirs(hls_dir, exist_ok=True)
                 
                 # Build rpicam-vid command - outputs TCP H.264 for VLC compatibility
@@ -150,6 +150,7 @@ class CameraManager:
                     '--bitrate', str(bitrate),
                     '--codec', 'h264',
                     '--inline',
+                    '--intra', '25',  # Force keyframe (I-frame) every 25 frames (1 second) for fast HLS startup
                     '--listen',  # Listen mode for TCP
                     '-o', f'tcp://0.0.0.0:{self._rtsp_port}',  # TCP output (VLC compatible)
                 ]
@@ -400,6 +401,7 @@ class CameraManager:
             if self._is_awake and key in restart_settings:
                 logging.info(f"Setting '{key}' changed, restarting stream...")
                 self._cleanup_camera()
+                self._is_awake = False
                 time.sleep(0.5)  # Brief pause
                 self.wake()
             
@@ -416,6 +418,7 @@ class CameraManager:
             was_awake = self._is_awake
             if was_awake:
                 self._cleanup_camera()
+                self._is_awake = False
             
             self._settings = self.DEFAULT_SETTINGS.copy()
             
