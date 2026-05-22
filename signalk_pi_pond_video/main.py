@@ -360,36 +360,23 @@ def create_app(config: Dict[str, Any]) -> tuple:
             response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
             return response, 204
         
+        from flask import send_from_directory
         hls_dir = '/tmp/hls'
-        file_path = os.path.join(hls_dir, filename)
         
-        # Security check - prevent directory traversal
-        if not os.path.abspath(file_path).startswith(os.path.abspath(hls_dir)):
-            return 'Access denied', 403
-        
-        if not os.path.exists(file_path):
+        try:
+            response = send_from_directory(hls_dir, filename)
+            if filename.endswith('.m3u8'):
+                response.headers['Content-Type'] = 'application/vnd.apple.mpegurl'
+            elif filename.endswith('.ts'):
+                response.headers['Content-Type'] = 'video/mp2t'
+            
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            response.headers.add('Cache-Control', 'no-cache, no-store, must-revalidate')
+            response.headers.add('Pragma', 'no-cache')
+            response.headers.add('Expires', '0')
+            return response
+        except FileNotFoundError:
             return 'File not found', 404
-        
-        # Determine MIME type
-        if filename.endswith('.m3u8'):
-            mimetype = 'application/vnd.apple.mpegurl'
-        elif filename.endswith('.ts'):
-            mimetype = 'video/mp2t'
-        else:
-            mimetype = 'application/octet-stream'
-        
-        def generate():
-            with open(file_path, 'rb') as f:
-                while True:
-                    chunk = f.read(8192)
-                    if not chunk:
-                        break
-                    yield chunk
-        
-        response = Response(generate(), mimetype=mimetype)
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Cache-Control', 'no-cache')
-        return response
     
     @app.route('/config', methods=['GET', 'POST', 'OPTIONS'])
     def config():
