@@ -14,14 +14,14 @@ device:
   hls_port: 8888
 
 camera:
-  # Resolution: 1280x720 (Best HD balance for Pi Zero), 1920x1080 (Full HD, can buffer on Wi-Fi), 640x480 (SD)
-  resolution: "1280x720"
-  # Framerate: 25 for smooth H.264 streaming (Pi Zero can handle this with hardware encoding)
-  framerate: 25
-  # H.264 bitrate in bits per second (3 Mbps for excellent 720p quality)
-  bitrate: 3000000
-  # H.264 CRF quality: 18-28 range, lower = better quality (20 is very crisp)
-  quality: 20
+  # Resolution: 640x480 (VGA - highly recommended for Pi Zero), 1280x720 (HD, can freeze on Pi Zero), 1920x1080
+  resolution: "640x480"
+  # Framerate: 15 is perfectly optimized for the Pi Zero WH to prevent CPU choking and frame drops
+  framerate: 15
+  # H.264 bitrate in bits per second (700 Kbps is perfect for 15 fps VGA quality)
+  bitrate: 700000
+  # H.264 CRF quality: 18-28 range, lower = better quality (22 is good balance)
+  quality: 22
   # Camera rotation: 0, 90, 180, 270
   rotation: 180
   # Horizontal flip
