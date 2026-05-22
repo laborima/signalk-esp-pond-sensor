@@ -346,6 +346,7 @@ export default function PondVideoCard({ streamUrl }) {
                 hls.loadSource(hlsUrl);
                 hls.attachMedia(video);
                 hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    video.muted = true;
                     video.play().catch(e => console.log("HLS autoplay failed:", e));
                 });
                 hls.on(Hls.Events.ERROR, (event, data) => {
@@ -367,8 +368,10 @@ export default function PondVideoCard({ streamUrl }) {
                 });
             } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
                 // For Safari (native support)
+                video.muted = true;
                 video.src = hlsUrl;
                 video.addEventListener('loadedmetadata', () => {
+                    video.muted = true;
                     video.play().catch(e => console.log("Native HLS autoplay failed:", e));
                 });
             }
@@ -769,7 +772,7 @@ export default function PondVideoCard({ streamUrl }) {
                         autoPlay
                         muted
                         playsInline
-                        controls={isFullscreen}
+                        controls={true}
                         style={isFullscreen ? { width: "100%", height: "100%", objectFit: "contain", display: "block" } : {}}
                         className={isFullscreen ? "" : "w-full h-full object-cover"}
                         onError={() => {
