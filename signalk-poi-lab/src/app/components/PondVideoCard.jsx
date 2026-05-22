@@ -67,19 +67,9 @@ const FIXED_CAMERA_SETTINGS_ESP32 = {
 const getProxyBaseUrl = () => {
     if (typeof window === "undefined") return "";
     if (process.env.NODE_ENV !== "production") {
-        return process.env.NEXT_PUBLIC_POND_VIDEO_URL || "http://192.168.1.82:81";
+        return process.env.NEXT_PUBLIC_POND_VIDEO_URL || "http://192.168.1.84:8080";
     }
     return window.location.origin + "/signalk-poi-lab/pond-video";
-};
-
-const getWsUrl = () => {
-    if (typeof window === "undefined") return "";
-    if (process.env.NODE_ENV !== "production") {
-        const base = process.env.NEXT_PUBLIC_POND_VIDEO_URL || "http://192.168.1.82:81";
-        return base.replace(/^http/, "ws").replace(/:81$/, ":82");
-    }
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${window.location.host}/signalk-poi-lab/pond-ws`;
 };
 
 export default function PondVideoCard({ streamUrl }) {
