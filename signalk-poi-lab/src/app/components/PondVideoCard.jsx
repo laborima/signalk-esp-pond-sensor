@@ -159,7 +159,7 @@ export default function PondVideoCard({ streamUrl }) {
                 // Detect stream type: Pi H.264 has hls_url pointing to Flask, ESP32 uses WebSocket/MJPEG
                 if (info.hls_url && !info.hls_url.includes(':8888')) {
                     // New Flask-based HLS (port 8080)
-                    setHlsUrl(info.hls_url);
+                    setHlsUrl(getProxyBaseUrl() + "/hls/index.m3u8");
                     setStreamMode("hls");
                 } else if (detectedType === "esp32") {
                     setStreamMode("ws");
@@ -295,7 +295,7 @@ export default function PondVideoCard({ streamUrl }) {
                 
                 // Check if HLS stream is available (Pi H.264 mode)
                 if (data.hls_url) {
-                    setHlsUrl(data.hls_url);
+                    setHlsUrl(getProxyBaseUrl() + "/hls/index.m3u8");
                     setStreamMode("hls");
                     setStatus("streaming");
                 } else {
