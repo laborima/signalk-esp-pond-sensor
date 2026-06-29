@@ -9,7 +9,6 @@ import AdviceCard from "./components/AdviceCard";
 import RecommendationList from "./components/RecommendationList";
 import DerivedDataCard from "./components/DerivedDataCard";
 import ConnectionStatus from "./components/ConnectionStatus";
-import HealthScore from "./components/HealthScore";
 import AirDataCard from "./components/AirDataCard";
 import WaterLevelCard from "./components/WaterLevelCard";
 import PondVideoCard from "./components/PondVideoCard";
@@ -82,13 +81,13 @@ export default function Home() {
                     </div>
                 )}
                 
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-                    <div className="lg:col-span-2">
-                        <AnimatedFish healthScore={healthScore.score} size="lg" />
-                    </div>
-                    <div>
-                        <HealthScore score={healthScore.score} status={healthScore.status} />
-                    </div>
+                <div className="mb-8">
+                    <AnimatedFish
+                        healthScore={healthScore.score}
+                        lightLevel={data?.light?.level}
+                        waterLevel={data?.water?.level}
+                        size="lg"
+                    />
                 </div>
                 
                 <section className="mb-8">

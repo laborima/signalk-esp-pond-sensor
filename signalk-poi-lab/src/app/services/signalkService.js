@@ -22,16 +22,23 @@ const getSignalKBaseUrl = () => {
  * At max water: sensor reads ~5.99 (distance to bottom through water).
  * Pond depth ~60cm. Low alert at 5cm below max. */
 const WATER_LEVEL_SENSOR_MAX = 5.99;
-const WATER_LEVEL_SENSOR_MIN = 0.0;
 const WATER_LEVEL_DEPTH_CM = 60;
+
+/* Plausible raw reading range. Outside of it the ultrasonic sensor
+ * glitched (failed echo → 0/null, echo past the pond → way above max):
+ * treat as "no data" rather than displaying a false critical level. */
+const WATER_LEVEL_VALID_RAW_MIN = 0.5; // ≈8% — the pond is never this empty
+const WATER_LEVEL_VALID_RAW_MAX = WATER_LEVEL_SENSOR_MAX * 1.15;
 
 /**
  * Converts raw SignalK water level value to calibrated data.
+ * Out-of-range readings (sensor glitches) yield null values.
  * @param {number} rawValue - Raw value from SignalK (distance/100)
- * @returns {{ percent: number, cm: number }} Calibrated level
+ * @returns {{ percent: number|null, cm: number|null }} Calibrated level
  */
 const calibrateWaterLevel = (rawValue) => {
-    if (rawValue === null || rawValue === undefined || isNaN(rawValue)) {
+    if (rawValue === null || rawValue === undefined || isNaN(rawValue)
+        || rawValue < WATER_LEVEL_VALID_RAW_MIN || rawValue > WATER_LEVEL_VALID_RAW_MAX) {
         return { percent: null, cm: null };
     }
     const ratio = Math.max(0, Math.min(1, rawValue / WATER_LEVEL_SENSOR_MAX));
@@ -109,6 +116,8 @@ const POND_PATHS = {
     waterConductivity: "tanks.liveWell.pond.conductivity",
     waterLevel: "tanks.liveWell.pond.currentLevel",
     lightLevel: "environment.inside.pond.illuminance",
+    // BH1750 on the Pi camera (preferred over the ESP32 value when present)
+    lightLevelPi: "environment.outside.pond.illuminance",
     airTemperature: "environment.inside.pond.temperature",
     airHumidity: "environment.outside.relativeHumidity",
     airPressure: "environment.inside.pond.pressure"
@@ -158,7 +167,8 @@ export const getPondData = async () => {
                 levelRaw: raw.waterLevel
             },
             light: {
-                level: raw.lightLevel
+                level: raw.lightLevelPi ?? raw.lightLevel,
+                source: raw.lightLevelPi !== null && raw.lightLevelPi !== undefined ? "pi" : "esp32"
             },
             air: {
                 temperature: raw.airTemperature,
@@ -211,6 +221,7 @@ export const createPondWebSocket = (onData, onError) => {
                     context: "vessels.self",
                     subscribe: [
                         { path: "environment.inside.pond.*" },
+                        { path: "environment.outside.pond.illuminance" },
                         { path: "environment.outside.relativeHumidity" }
                     ]
                 };
@@ -282,6 +293,8 @@ const parseDeltaUpdate = (updates) => {
                 result.waterLevel = value.value;
             } else if (path === "environment.inside.pond.illuminance") {
                 result.lightLevel = value.value;
+            } else if (path === "environment.outside.pond.illuminance") {
+                result.lightLevelPi = value.value;
             } else if (path === "environment.inside.pond.temperature") {
                 result.airTemperature = value.value;
             } else if (path === "environment.outside.relativeHumidity") {

@@ -8,6 +8,7 @@ const http = require('http');
  * Proxied HTTP routes (port cameraPort, default 8080):
  *   /signalk-poi-lab/pond-video/wake    -> http://PI_IP:PORT/wake
  *   /signalk-poi-lab/pond-video/sleep   -> http://PI_IP:PORT/sleep
+ *   /signalk-poi-lab/pond-video/live.ts -> http://PI_IP:PORT/live.ts (live MPEG-TS)
  *   /signalk-poi-lab/pond-video/hls/*   -> http://PI_IP:PORT/hls/*
  *   /signalk-poi-lab/pond-video/capture -> http://PI_IP:PORT/capture
  *   /signalk-poi-lab/pond-video/config  -> http://PI_IP:PORT/config
@@ -75,13 +76,19 @@ module.exports = function (app) {
             return;
         }
 
+        // Streaming routes (/live.ts, /hls/*) get a longer idle timeout:
+        // /live.ts can auto-wake the camera, whose sensor needs ~10-15s to
+        // produce the first frame on a Pi Zero. /wake blocks similarly.
+        const isSlow = targetPath.startsWith('/live') || targetPath.startsWith('/hls')
+            || targetPath.startsWith('/wake');
+
         const options = {
             hostname: cameraHost,
             port: cameraPort,
             path: targetPath,
             method: req.method,
             headers: { 'Host': `${cameraHost}:${cameraPort}` },
-            timeout: 6000
+            timeout: isSlow ? 45000 : 6000
         };
 
         const proxyReq = http.request(options, (proxyRes) => {
@@ -101,6 +108,10 @@ module.exports = function (app) {
                     target: `${cameraHost}:${cameraPort}${targetPath}`
                 });
             }
+        });
+
+        proxyReq.on('socket', (socket) => {
+            socket.setNoDelay(true); // Forward live video chunks without Nagle delay
         });
 
         proxyReq.on('timeout', () => {

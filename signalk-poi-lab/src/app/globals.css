@@ -82,6 +82,53 @@ body {
   }
 }
 
+@keyframes tail-beat {
+  0%, 100% { transform: rotate(-10deg); }
+  50% { transform: rotate(10deg); }
+}
+
+@keyframes fin-top {
+  0%, 100% { transform: rotate(-5deg); }
+  50% { transform: rotate(15deg); }
+}
+
+@keyframes fin-bottom {
+  0%, 100% { transform: rotate(5deg); }
+  50% { transform: rotate(-15deg); }
+}
+
+@keyframes koi-swim {
+  0%, 100% { transform: translateY(0) scaleY(1); }
+  50% { transform: translateY(-2px) scaleY(1.02); }
+}
+
+@keyframes koi-float {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-3px) rotate(-1deg);
+  }
+}
+
+@keyframes koi-shimmer {
+  0% {
+    transform: translateX(-120%);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.25;
+  }
+  50% {
+    transform: translateX(120%);
+    opacity: 0.25;
+  }
+  100% {
+    transform: translateX(120%);
+    opacity: 0;
+  }
+}
+
 @keyframes pulse-glow {
   0%, 100% {
     box-shadow: 0 0 5px rgba(59, 130, 246, 0.5);
@@ -109,6 +156,33 @@ body {
 
 .animate-swim {
   animation: swim 4s ease-in-out infinite;
+}
+
+.animate-koi-swim {
+  animation: koi-swim 2s ease-in-out infinite;
+}
+
+.animate-koi-float {
+  animation: koi-float 1.8s ease-in-out infinite;
+}
+
+.animate-koi-shimmer {
+  animation: koi-shimmer 3.2s linear infinite;
+}
+
+.animate-tail {
+  animation: tail-beat 1s ease-in-out infinite;
+  transform-origin: left center;
+}
+
+.animate-fin-top {
+  animation: fin-top 1.5s ease-in-out infinite;
+  transform-origin: bottom center;
+}
+
+.animate-fin-bottom {
+  animation: fin-bottom 1.5s ease-in-out infinite;
+  transform-origin: top center;
 }
 
 .animate-pulse-glow {

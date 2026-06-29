@@ -31,6 +31,7 @@ export default function GaugeCard({
         const startTime = Date.now();
         const startValue = animatedValue;
         const endValue = value;
+        let animationFrameId;
         
         const animate = () => {
             const elapsed = Date.now() - startTime;
@@ -40,13 +41,19 @@ export default function GaugeCard({
             setAnimatedValue(startValue + (endValue - startValue) * eased);
             
             if (progress < 1) {
-                requestAnimationFrame(animate);
+                animationFrameId = requestAnimationFrame(animate);
             } else {
                 setIsAnimating(false);
             }
         };
         
-        requestAnimationFrame(animate);
+        animationFrameId = requestAnimationFrame(animate);
+        
+        return () => {
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+        };
     }, [value]);
     
     const getStatus = () => {

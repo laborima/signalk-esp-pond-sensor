@@ -13,6 +13,7 @@ export default function HealthScore({ score, status }) {
         const startTime = Date.now();
         const startValue = animatedScore;
         const endValue = score;
+        let animationFrameId;
         
         const animate = () => {
             const elapsed = Date.now() - startTime;
@@ -22,11 +23,17 @@ export default function HealthScore({ score, status }) {
             setAnimatedScore(Math.round(startValue + (endValue - startValue) * eased));
             
             if (progress < 1) {
-                requestAnimationFrame(animate);
+                animationFrameId = requestAnimationFrame(animate);
             }
         };
         
-        requestAnimationFrame(animate);
+        animationFrameId = requestAnimationFrame(animate);
+        
+        return () => {
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+        };
     }, [score]);
     
     const getColor = () => {

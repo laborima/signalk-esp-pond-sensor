@@ -8,7 +8,8 @@ import Hls from "hls.js";
  *
  * Streaming strategy:
  *   - ESP32: WebSocket JPEG → <canvas>  (~30ms latency) or MJPEG fallback
- *   - Raspberry Pi: HLS → <video> (H.264 hardware encoding)
+ *   - Raspberry Pi: live MPEG-TS over HTTP via mpegts.js (~1s latency),
+ *     with HLS fallback for browsers without Media Source Extensions
  *
  * Camera controls (brightness, contrast, etc.) via POST /config.
  *
@@ -83,8 +84,8 @@ export default function PondVideoCard({ streamUrl }) {
     const [waking, setWaking] = useState(false);
     const [showControls, setShowControls] = useState(false);
     const [camSettings, setCamSettings] = useState(null);
-    const [streamMode, setStreamMode] = useState("ws"); // "ws", "mjpeg", or "hls"
-    const [hlsUrl, setHlsUrl] = useState(null); // HLS stream URL for Pi
+    const [streamMode, setStreamMode] = useState("ws"); // "ws", "mjpeg", "ts" or "hls"
+    const [hlsUrl, setHlsUrl] = useState(null); // HLS stream URL for Pi (fallback)
     const [fps, setFps] = useState(0);
     const [streamError, setStreamError] = useState(false);
     const [isMobileViewport, setIsMobileViewport] = useState(false);
@@ -157,9 +158,13 @@ export default function PondVideoCard({ streamUrl }) {
                 const detectedType = (info.psram !== undefined || info.free_heap !== undefined) ? "esp32" : "pi";
                 setDeviceType(detectedType);
                 
-                // Detect stream type: Pi H.264 has hls_url pointing to Flask, ESP32 uses WebSocket/MJPEG
-                if (info.hls_url && !info.hls_url.includes(':8888')) {
-                    // New Flask-based HLS (port 8080)
+                // Detect stream type: Pi H.264 exposes ts_url/hls_url, ESP32 uses WebSocket/MJPEG
+                if (info.ts_url) {
+                    // Low-latency live MPEG-TS (preferred, falls back to HLS without MSE)
+                    setHlsUrl(getProxyBaseUrl() + "/hls/index.m3u8");
+                    setStreamMode("ts");
+                } else if (info.hls_url && !info.hls_url.includes(':8888')) {
+                    // Flask-based HLS only (older Pi firmware)
                     setHlsUrl(getProxyBaseUrl() + "/hls/index.m3u8");
                     setStreamMode("hls");
                 } else if (detectedType === "esp32") {
@@ -286,16 +291,25 @@ export default function PondVideoCard({ streamUrl }) {
         if (wakeAbortRef.current) wakeAbortRef.current.abort();
         const controller = new AbortController();
         wakeAbortRef.current = controller;
-        const timer = setTimeout(() => controller.abort(), 20000);
+        // Pi camera sensor warmup takes 10-15s before /wake responds (up to ~27s cold boot)
+        const timer = setTimeout(() => controller.abort(), 40000);
         setWaking(true);
         try {
             const r = await fetch(resolvedUrl + "/wake", { method: "POST", signal: controller.signal });
             if (r.ok) {
                 const data = await r.json();
-                await applyFixedCamSettings();
-                
-                // Check if HLS stream is available (Pi H.264 mode)
-                if (data.hls_url) {
+                // Pi keeps its own config.yaml defaults — pushing UI defaults
+                // here used to trigger a full stream restart right after wake
+                if (!data.ts_url && !data.hls_url) {
+                    await applyFixedCamSettings();
+                }
+
+                // Check if a Pi H.264 stream is available (TS preferred, HLS fallback)
+                if (data.ts_url) {
+                    setHlsUrl(getProxyBaseUrl() + "/hls/index.m3u8");
+                    setStreamMode("ts");
+                    setStatus("streaming");
+                } else if (data.hls_url) {
                     setHlsUrl(getProxyBaseUrl() + "/hls/index.m3u8");
                     setStreamMode("hls");
                     setStatus("streaming");
@@ -326,11 +340,107 @@ export default function PondVideoCard({ streamUrl }) {
     }, [resolvedUrl, stopWsStream]);
 
     useEffect(() => {
-        // Only start WebSocket stream for ESP32 (not HLS mode)
-        if (status === "awake" && streamMode !== "hls" && !wsRef.current) {
+        // Only start WebSocket stream for ESP32 (not Pi TS/HLS modes)
+        if (status === "awake" && streamMode !== "hls" && streamMode !== "ts" && !wsRef.current) {
             startWsStream();
         }
     }, [status, streamMode, startWsStream]);
+
+    // Low-latency live MPEG-TS playback (Raspberry Pi, via mpegts.js)
+    useEffect(() => {
+        if (streamMode !== "ts" || status !== "streaming") return;
+        if (!videoRef.current) return;
+
+        let player = null;
+        let cancelled = false;
+        let retryTimer = null;
+        let retries = 0;
+
+        const destroyPlayer = () => {
+            if (player) {
+                try {
+                    player.pause();
+                    player.unload();
+                    player.detachMediaElement();
+                    player.destroy();
+                } catch { /* ignore teardown errors */ }
+                player = null;
+            }
+        };
+
+        (async () => {
+            const mpegts = (await import("mpegts.js")).default;
+            if (cancelled) return;
+
+            if (!mpegts.getFeatureList().mseLivePlayback) {
+                // No MSE in this browser (older iOS Safari): fall back to HLS
+                setStreamMode("hls");
+                return;
+            }
+
+            const createPlayer = () => {
+                if (cancelled || !videoRef.current) return;
+
+                player = mpegts.createPlayer(
+                    {
+                        type: "mpegts",
+                        isLive: true,
+                        url: getProxyBaseUrl() + "/live.ts",
+                    },
+                    {
+                        enableWorker: true,
+                        enableStashBuffer: false, // Minimal input buffering for low latency
+                        autoCleanupSourceBuffer: true,
+                        liveBufferLatencyChasing: true, // Seek forward if we drift behind live
+                        liveBufferLatencyMaxLatency: 2.0,
+                        liveBufferLatencyMinRemain: 0.3,
+                        reuseRedirectedURL: true,
+                    }
+                );
+
+                const reconnect = () => {
+                    destroyPlayer();
+                    if (cancelled) return;
+                    retries += 1;
+                    if (retries > 10) {
+                        // Stream gone for good: fall back to HLS
+                        setStreamError(true);
+                        setStreamMode("hls");
+                        return;
+                    }
+                    setStreamError(true);
+                    retryTimer = setTimeout(createPlayer, 2000);
+                };
+
+                player.attachMediaElement(videoRef.current);
+                player.on(mpegts.Events.MEDIA_INFO, () => {
+                    retries = 0; // Stream healthy again
+                    setStreamError(false);
+                });
+                player.on(mpegts.Events.ERROR, (errType) => {
+                    console.log("mpegts.js error, reconnecting:", errType);
+                    reconnect();
+                });
+                // Live stream ended server-side (e.g. camera restarting after a
+                // settings change, ~10s on Pi Zero): reconnect instead of spinning
+                player.on(mpegts.Events.LOADING_COMPLETE, () => {
+                    console.log("TS stream ended, reconnecting...");
+                    reconnect();
+                });
+                player.load();
+                videoRef.current.muted = true;
+                player.play().catch(e => console.log("TS autoplay failed:", e));
+            };
+
+            createPlayer();
+        })();
+
+        return () => {
+            cancelled = true;
+            if (retryTimer) clearTimeout(retryTimer);
+            destroyPlayer();
+        };
+    }, [streamMode, status]);
 
     useEffect(() => {
         let hls = null;
@@ -341,7 +451,11 @@ export default function PondVideoCard({ streamUrl }) {
                 hls = new Hls({
                     enableWorker: true,
                     lowLatencyMode: true,
-                    backBufferLength: 60
+                    // Stay close to the live edge (1s segments → ~2-3s latency)
+                    liveSyncDurationCount: 2,
+                    liveMaxLatencyDurationCount: 6,
+                    maxBufferLength: 10,
+                    backBufferLength: 10
                 });
                 hls.loadSource(hlsUrl);
                 hls.attachMedia(video);
@@ -500,7 +614,8 @@ export default function PondVideoCard({ streamUrl }) {
     }, [resolvedUrl]);
 
     const applyCamSetting = useCallback(async (key, value) => {
-        setCamSettings(prev => prev ? { ...prev, [key]: Number(value) } : prev);
+        const parsed = Number.isNaN(Number(value)) ? value : Number(value);
+        setCamSettings(prev => prev ? { ...prev, [key]: parsed } : prev);
         try {
             await fetch(`${resolvedUrl}/config?${key}=${value}`, { method: "POST", signal: AbortSignal.timeout(5000) });
         } catch { /* ignore */ }
@@ -544,8 +659,8 @@ export default function PondVideoCard({ streamUrl }) {
                     </span>
                     {isStreaming && (
                         <span className="text-xs text-white/70 font-mono">
-                            {streamMode === "ws" ? "WS" : streamMode === "hls" ? "HLS" : "MJPEG"}
-                            {streamMode !== "hls" && ` · ${fps} fps`}
+                            {streamMode === "ws" ? "WS" : streamMode === "ts" ? "TS direct" : streamMode === "hls" ? "HLS" : "MJPEG"}
+                            {streamMode !== "hls" && streamMode !== "ts" && ` · ${fps} fps`}
                             {streamError && <span className="text-yellow-300"> · reconnexion...</span>}
                         </span>
                     )}
@@ -765,8 +880,8 @@ export default function PondVideoCard({ streamUrl }) {
                         onError={checkCamera} />
                 )}
 
-                {/* HLS video for Raspberry Pi H.264 */}
-                {isStreaming && streamMode === "hls" && hlsUrl && (
+                {/* Live MPEG-TS / HLS video for Raspberry Pi H.264 */}
+                {isStreaming && (streamMode === "ts" || (streamMode === "hls" && hlsUrl)) && (
                     <video
                         ref={videoRef}
                         autoPlay

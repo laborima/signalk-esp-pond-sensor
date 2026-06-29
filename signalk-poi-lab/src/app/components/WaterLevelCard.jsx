@@ -20,22 +20,33 @@ export default function WaterLevelCard({ level, levelCm, maxCm = 60, alertLow = 
         const startTime = Date.now();
         const startValue = animatedLevel;
         const endValue = Math.max(0, Math.min(1, level));
+        let animationFrameId;
 
         const animate = () => {
             const elapsed = Date.now() - startTime;
             const progress = Math.min(elapsed / duration, 1);
             const eased = 1 - Math.pow(1 - progress, 3);
             setAnimatedLevel(startValue + (endValue - startValue) * eased);
-            if (progress < 1) requestAnimationFrame(animate);
+            if (progress < 1) {
+                animationFrameId = requestAnimationFrame(animate);
+            }
         };
 
-        requestAnimationFrame(animate);
+        animationFrameId = requestAnimationFrame(animate);
+        
+        return () => {
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+        };
     }, [level]);
 
+    const hasData = !(level === null || level === undefined || isNaN(level));
+
     const getStatus = () => {
-        if (level === null || level === undefined || isNaN(level)) return "unknown";
-        if (level < alertLow) return "warning-low";
+        if (!hasData) return "unknown";
         if (level < alertLow - 0.05) return "critical-low";
+        if (level < alertLow) return "warning-low";
         return "normal";
     };
 
@@ -86,7 +97,7 @@ export default function WaterLevelCard({ level, levelCm, maxCm = 60, alertLow = 
                     />
                     <div className="absolute inset-0 flex items-center justify-center">
                         <span className="text-sm font-bold text-poi-bark/80 drop-shadow-sm">
-                            {percentage.toFixed(0)}%
+                            {hasData ? `${percentage.toFixed(0)}%` : "--"}
                         </span>
                     </div>
                 </div>
