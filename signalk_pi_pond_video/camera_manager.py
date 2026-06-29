@@ -11,11 +11,12 @@ Provides H.264 hardware encoding with RTSP/HLS streaming.
 import os
 import io
 import time
+import queue
 import logging
 import subprocess
 import signal
 from typing import Optional, Dict, Any, Tuple
-from threading import RLock
+from threading import RLock, Lock, Thread, Event
 
 
 class CameraManager:
@@ -69,10 +70,25 @@ class CameraManager:
         self._settings = self.DEFAULT_SETTINGS.copy()
         self._fifo_path = "/tmp/camera_fifo"
         self._rtsp_port = config.get('rtsp_port', 8554)
+
+        # Live MPEG-TS fan-out (low-latency streaming to HTTP clients)
+        self._ts_clients = set()
+        self._ts_clients_lock = Lock()
+        self._broadcast_thread: Optional[Thread] = None
+        self._first_chunk_event = Event()
         
         # Apply config overrides
         self._apply_config_settings()
-        
+
+        # Snapshot of config-merged settings, used by reset_settings()
+        # (NOT the hardcoded DEFAULT_SETTINGS, which would override config.yaml
+        # tuning like 15fps/700kbps and overload the Pi Zero)
+        self._initial_settings = self._settings.copy()
+        self._initial_resolution = self.config.get('resolution', '1280x720')
+
+        # Debounced stream restart (coalesces bursts of setting changes)
+        self._restart_timer: Optional[object] = None
+
         # Create FIFO for rpicam-vid
         self._create_fifo()
         
@@ -168,7 +184,26 @@ class CameraManager:
                     rpicam_cmd.append('--hflip')
                 if vflip:
                     rpicam_cmd.append('--vflip')
-                
+
+                # Image adjustments (UI uses -100..100 scales, rpicam uses
+                # -1..1 for brightness and 0..2 around nominal 1.0 for the rest)
+                brightness = self._settings.get('brightness', 0)
+                contrast = self._settings.get('contrast', 0)
+                saturation = self._settings.get('saturation', 0)
+                sharpness = self._settings.get('sharpness', 1)
+                exposure = self._settings.get('exposure', -6)
+                iso = self._settings.get('iso', 100)
+
+                rpicam_cmd.extend(['--brightness', f"{max(-1.0, min(1.0, brightness / 100)):.2f}"])
+                rpicam_cmd.extend(['--contrast', f"{max(0.0, 1 + contrast / 100):.2f}"])
+                rpicam_cmd.extend(['--saturation', f"{max(0.0, 1 + saturation / 100):.2f}"])
+                rpicam_cmd.extend(['--sharpness', f"{max(0.0, 1 + (sharpness - 1) / 100):.2f}"])
+                # UI exposure is -13..-1 with -6 as neutral -> EV compensation -7..+5
+                rpicam_cmd.extend(['--ev', f"{max(-10, min(10, exposure + 6))}"])
+                # ISO 100 = auto gain; above that, fixed gain iso/100
+                if iso > 100:
+                    rpicam_cmd.extend(['--gain', f"{iso / 100:.1f}"])
+
                 logging.info(f"Starting rpicam-vid: {' '.join(rpicam_cmd)}")
                 
                 # Start rpicam-vid process (TCP server)
@@ -211,7 +246,12 @@ class CameraManager:
                 
                 logging.info(f"rpicam-vid successfully started and listening on port {self._rtsp_port}")
                 
-                # Build ffmpeg command to read TCP and create HLS
+                # Build ffmpeg command to read TCP and produce two outputs:
+                #  1. HLS (fallback for Safari / no-MSE browsers): 1s segments,
+                #     6-segment playlist, segments kept on disk a while after
+                #     leaving the playlist so in-flight downloads never 404.
+                #  2. MPEG-TS on stdout: fanned out to HTTP clients by the
+                #     broadcaster thread for sub-second live playback (mpegts.js).
                 # rpicam-vid runs as TCP server with --listen, ffmpeg connects as client
                 ffmpeg_cmd = [
                     'ffmpeg',
@@ -220,37 +260,61 @@ class CameraManager:
                     '-probesize', '32',
                     '-analyzeduration', '0',
                     '-i', f'tcp://127.0.0.1:{self._rtsp_port}',  # Connect to rpicam-vid TCP
+                    # Output 1: HLS fallback
+                    '-map', '0:v',
                     '-c:v', 'copy',  # Copy video stream (no re-encode)
                     '-f', 'hls',
-                    '-hls_time', '2',  # 2 second segments
-                    '-hls_list_size', '3',  # Keep 3 segments
-                    '-hls_flags', 'delete_segments+omit_endlist',
+                    '-hls_time', '1',  # 1 second segments (matches --intra keyframe interval)
+                    '-hls_list_size', '6',  # 6 segments in playlist
+                    '-hls_delete_threshold', '4',  # Keep 4 extra segments on disk before deleting
+                    '-hls_flags', 'delete_segments+omit_endlist+independent_segments',
                     '-hls_allow_cache', '0',
-                    f'{hls_dir}/index.m3u8'
+                    f'{hls_dir}/index.m3u8',
+                    # Output 2: live MPEG-TS to stdout (PAT/PMT re-emitted every 100ms by default)
+                    '-map', '0:v',
+                    '-c:v', 'copy',
+                    '-f', 'mpegts',
+                    '-muxdelay', '0',
+                    'pipe:1',
                 ]
-                
+
                 logging.info(f"Starting ffmpeg: {' '.join(ffmpeg_cmd)}")
-                
+
                 # Start ffmpeg process
                 self._ffmpeg_log = open('/tmp/ffmpeg.log', 'w')
                 ffmpeg_proc = subprocess.Popen(
                     ffmpeg_cmd,
-                    stdout=self._ffmpeg_log,
+                    stdout=subprocess.PIPE,
                     stderr=self._ffmpeg_log,
                     preexec_fn=os.setsid
                 )
-                
-                # Wait for HLS files to be created
-                time.sleep(3)
-                
-                # Check if ffmpeg is running
-                if ffmpeg_proc.poll() is not None:
-                    logging.error("ffmpeg exited immediately")
-                    self._rpicam_log.close()
-                    self._ffmpeg_log.close()
-                    self._cleanup_process(rpicam_proc)
-                    self._cleanup_process(ffmpeg_proc)
-                    return False
+
+                # Start MPEG-TS broadcaster thread (reads stdout, fans out to clients)
+                self._first_chunk_event = Event()  # Fresh event for this wake cycle
+                self._broadcast_thread = Thread(
+                    target=self._broadcast_loop, args=(ffmpeg_proc,), daemon=True
+                )
+                self._broadcast_thread.start()
+
+                # Wait for actual video data before declaring the stream ready.
+                # The camera sensor takes 6-10s to produce its first frame on a
+                # Pi Zero; clients connecting before that would starve.
+                logging.info("Waiting for first video data (camera sensor warmup)...")
+                video_ready = False
+                for _ in range(50):  # Up to 25 seconds
+                    if ffmpeg_proc.poll() is not None:
+                        logging.error("ffmpeg exited during startup")
+                        self._rpicam_log.close()
+                        self._ffmpeg_log.close()
+                        self._cleanup_process(rpicam_proc)
+                        self._cleanup_process(ffmpeg_proc)
+                        return False
+                    if self._first_chunk_event.wait(0.5):
+                        video_ready = True
+                        break
+
+                if not video_ready:
+                    logging.warning("No video data after 25s, continuing anyway (HLS may still come up)")
                 
                 self._rpicam_process = rpicam_proc
                 self._ffmpeg_process = ffmpeg_proc
@@ -269,6 +333,79 @@ class CameraManager:
                 self._cleanup_camera()
                 return False
     
+    def _broadcast_loop(self, proc: subprocess.Popen):
+        """
+        Read MPEG-TS from ffmpeg stdout and fan out to connected HTTP clients.
+
+        Always drains stdout (even with no clients) so ffmpeg never blocks
+        on a full pipe. Chunks fanned out to clients are aligned on the
+        188-byte TS packet boundary so a client joining mid-stream always
+        starts on a sync byte. Lagging clients (full queue) are
+        disconnected and will reconnect on their own.
+        """
+        TS_PACKET = 188
+        stdout = proc.stdout
+        carry = b''
+        try:
+            while True:
+                data = stdout.read(8192)
+                if not data:
+                    break
+                carry += data
+                aligned_len = len(carry) - (len(carry) % TS_PACKET)
+                if aligned_len == 0:
+                    continue
+                chunk = carry[:aligned_len]
+                carry = carry[aligned_len:]
+                if not self._first_chunk_event.is_set():
+                    self._first_chunk_event.set()  # Signal wake(): video is flowing
+                    logging.info("First video data received from ffmpeg")
+                with self._ts_clients_lock:
+                    for client_q in list(self._ts_clients):
+                        try:
+                            client_q.put_nowait(chunk)
+                        except queue.Full:
+                            self._ts_clients.discard(client_q)
+                            try:
+                                client_q.put_nowait(None)  # Signal end-of-stream
+                            except queue.Full:
+                                pass
+        except Exception as e:
+            logging.debug(f"TS broadcaster stopped: {e}")
+        finally:
+            # Stream ended: release all clients
+            with self._ts_clients_lock:
+                for client_q in list(self._ts_clients):
+                    try:
+                        client_q.put_nowait(None)
+                    except queue.Full:
+                        pass
+                self._ts_clients.clear()
+            logging.info("TS broadcaster thread exited")
+
+    def add_ts_client(self) -> 'queue.Queue':
+        """
+        Register a new live MPEG-TS client.
+
+        @return: Queue delivering TS chunks (None = end of stream)
+        """
+        client_q = queue.Queue(maxsize=128)  # ~1MB / ~10s of buffered stream max
+        with self._ts_clients_lock:
+            self._ts_clients.add(client_q)
+        logging.info(f"TS client connected ({len(self._ts_clients)} active)")
+        return client_q
+
+    def remove_ts_client(self, client_q: 'queue.Queue') -> None:
+        """Unregister a live MPEG-TS client."""
+        with self._ts_clients_lock:
+            self._ts_clients.discard(client_q)
+        logging.info(f"TS client disconnected ({len(self._ts_clients)} active)")
+
+    def has_ts_clients(self) -> bool:
+        """Check if any live MPEG-TS client is connected."""
+        with self._ts_clients_lock:
+            return len(self._ts_clients) > 0
+
     def _cleanup_process(self, proc):
         """Clean up a single process."""
         if proc:
@@ -284,6 +421,9 @@ class CameraManager:
     def sleep(self) -> None:
         """Stop H.264 streaming and release resources."""
         with self._lock:
+            if self._restart_timer:
+                self._restart_timer.cancel()
+                self._restart_timer = None
             if not self._is_awake:
                 return
             
@@ -376,12 +516,46 @@ class CameraManager:
                 logging.error(f"Frame capture failed: {e}")
                 return None
     
+    # Settings whose change requires an rpicam-vid restart.
+    # NOTE: 'quality' is absent on purpose — it only affects JPEG snapshots.
+    RESTART_SETTINGS = ['framerate', 'bitrate', 'rotation', 'hflip', 'vflip',
+                        'brightness', 'contrast', 'saturation', 'sharpness',
+                        'exposure', 'iso']
+
+    def _schedule_restart(self, delay: float = 1.5):
+        """
+        Schedule a debounced stream restart.
+
+        Bursts of setting changes (e.g. dragging a UI slider) coalesce
+        into a single restart once changes settle for `delay` seconds.
+        """
+        from threading import Timer
+        if self._restart_timer:
+            self._restart_timer.cancel()
+        timer = Timer(delay, self._do_restart)
+        timer.daemon = True
+        self._restart_timer = timer
+        timer.start()
+
+    def _do_restart(self):
+        """Restart the stream to apply pending setting changes."""
+        with self._lock:
+            self._restart_timer = None
+            if not self._is_awake:
+                return
+            logging.info("Applying camera settings (stream restart)...")
+            self._cleanup_camera()
+            self._is_awake = False
+            time.sleep(0.5)
+            self.wake()
+
     def set_setting(self, key: str, value: Any) -> bool:
         """
         Update a camera setting.
-        
-        Note: For rpicam-vid, changing most settings requires stream restart.
-        
+
+        Unchanged values are a no-op. Settings affecting the H.264 stream
+        trigger a debounced restart (~1.5s after the last change).
+
         @param key: Setting name
         @param value: New value
         @return: True if setting was applied
@@ -390,42 +564,52 @@ class CameraManager:
             if key not in self._settings:
                 logging.warning(f"Unknown camera setting: {key}")
                 return False
-            
-            old_value = self._settings[key]
+
+            if self._settings[key] == value:
+                return True  # No change, no restart
+
             self._settings[key] = value
-            
-            # For rpicam-vid, settings that affect the stream require restart
-            restart_settings = ['resolution', 'framerate', 'bitrate', 'quality', 
-                                'rotation', 'hflip', 'vflip']
-            
-            if self._is_awake and key in restart_settings:
-                logging.info(f"Setting '{key}' changed, restarting stream...")
-                self._cleanup_camera()
-                self._is_awake = False
-                time.sleep(0.5)  # Brief pause
-                self.wake()
-            
+
+            if self._is_awake and key in self.RESTART_SETTINGS:
+                logging.info(f"Setting '{key}' = {value}, scheduling stream restart...")
+                self._schedule_restart()
+
             logging.debug(f"Camera setting updated: {key} = {value}")
             return True
-    
-    def get_settings(self) -> Dict[str, Any]:
-        """Get current camera settings."""
-        return self._settings.copy()
-    
-    def reset_settings(self) -> None:
-        """Reset all settings to defaults."""
+
+    def set_resolution(self, resolution: str) -> bool:
+        """
+        Change the stream resolution (e.g. '640x480').
+
+        @param resolution: One of RESOLUTIONS keys
+        @return: True if accepted
+        """
         with self._lock:
-            was_awake = self._is_awake
-            if was_awake:
-                self._cleanup_camera()
-                self._is_awake = False
-            
-            self._settings = self.DEFAULT_SETTINGS.copy()
-            
-            if was_awake:
-                self.wake()
-            
-            logging.info("Camera settings reset to defaults")
+            if resolution not in self.RESOLUTIONS:
+                logging.warning(f"Unknown resolution: {resolution}")
+                return False
+            if self.config.get('resolution') == resolution:
+                return True
+            self.config['resolution'] = resolution
+            if self._is_awake:
+                logging.info(f"Resolution = {resolution}, scheduling stream restart...")
+                self._schedule_restart()
+            return True
+
+    def get_settings(self) -> Dict[str, Any]:
+        """Get current camera settings (includes 'framesize' resolution)."""
+        settings = self._settings.copy()
+        settings['framesize'] = self.config.get('resolution', '1280x720')
+        return settings
+
+    def reset_settings(self) -> None:
+        """Reset all settings to the config.yaml defaults."""
+        with self._lock:
+            self._settings = self._initial_settings.copy()
+            self.config['resolution'] = self._initial_resolution
+            if self._is_awake:
+                self._schedule_restart()
+            logging.info("Camera settings reset to config defaults")
     
     def _get_resolution(self) -> Tuple[int, int]:
         """Get resolution tuple from config."""
@@ -448,10 +632,11 @@ class CameraManager:
         except:
             ip = "127.0.0.1"
         
-        # HLS is now served via Flask API, not separate HTTP server
+        # HLS and live TS are served via Flask API, not separate HTTP server
         return {
             'rtsp': f"tcp://{ip}:{self._rtsp_port}",  # VLC compatible
-            'hls': f"http://{ip}:8080/hls/index.m3u8",  # Via Flask API
+            'hls': f"http://{ip}:8080/hls/index.m3u8",  # Via Flask API (fallback)
+            'ts': f"http://{ip}:8080/live.ts",  # Low-latency live MPEG-TS
         }
 
 
