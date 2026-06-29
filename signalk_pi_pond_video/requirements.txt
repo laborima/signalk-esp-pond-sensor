@@ -16,3 +16,9 @@ eventlet>=0.33.0
 
 # YAML configuration
 PyYAML>=6.0
+
+# BH1750 light sensor (I2C)
+smbus2>=0.4.0
+
+# SignalK delta publishing over MQTT
+paho-mqtt>=1.6.0

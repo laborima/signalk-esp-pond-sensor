@@ -3,18 +3,19 @@
 SignalK Pi Pond Video - Main Application (H.264/RTSP Edition)
 
 A lightweight video streaming server for Raspberry Pi Zero WH with Camera Module v3.
-Uses rpicam-vid for hardware H.264 encoding with RTSP/HLS streaming.
+Uses rpicam-vid for hardware H.264 encoding with low-latency MPEG-TS and HLS streaming.
 
 Features:
 - H.264 hardware encoding (efficient on Pi Zero)
-- RTSP and HLS streaming
+- Low-latency live MPEG-TS over HTTP (/live.ts, ~1s latency)
+- HLS streaming fallback (Safari / no-MSE browsers)
 - HTTP REST API for camera control
 - Auto-sleep power saving
 - Night standby mode
 - Runtime camera configuration
 
 @author Matthieu Laborie
-@version 2.0.0
+@version 2.1.0
 """
 
 import os
@@ -31,6 +32,7 @@ from typing import Optional, Dict, Any
 from flask import Flask, Response, request, jsonify
 
 from camera_manager import CameraManager
+from light_sensor import LightSensorPublisher
 
 
 # ============================================================================
@@ -61,6 +63,18 @@ DEFAULT_CONFIG = {
             'start_hour': 22,
             'end_hour': 7
         }
+    },
+    'light_sensor': {
+        'enabled': True,
+        'i2c_bus': 1,
+        'address': '0x23',
+        'interval': 60,
+        'signalk_path': 'environment.outside.pond.illuminance',
+    },
+    'mqtt': {
+        'host': '192.168.0.10',
+        'port': 1883,
+        'topic': 'signalk/delta',
     },
     'logging': {
         'level': 'INFO',
@@ -106,6 +120,7 @@ class AppState:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.camera_manager: Optional[CameraManager] = None
+        self.light_sensor: Optional[LightSensorPublisher] = None
         self.last_activity = time.time()
         self.start_time = time.time()
         self.running = True
@@ -135,7 +150,12 @@ class AppState:
         """Check if camera should auto-sleep due to inactivity."""
         if not self.camera_manager or not self.camera_manager.is_awake:
             return False
-            
+
+        # Never sleep while a live TS viewer is connected
+        if self.camera_manager.has_ts_clients():
+            self.touch_activity()
+            return False
+
         timeout = self.config['power'].get('auto_sleep_timeout', 600)
         inactive_time = time.time() - self.last_activity
         return inactive_time >= timeout
@@ -175,6 +195,7 @@ class AppState:
             stream_urls = {
                 'rtsp': f"rtsp://{ip}:{rtsp_port}/live",
                 'hls': f"http://{ip}:{hls_port}/live/index.m3u8",
+                'ts': f"http://{ip}:{self.config['device'].get('api_port', 8080)}/live.ts",
                 'tcp': f"tcp://{ip}:{rtsp_port}",
             }
         
@@ -187,7 +208,9 @@ class AppState:
             'standby': self.is_night_standby(),
             'streaming': is_awake,  # Streaming is active if camera is awake (H.264 always streams when awake)
             'hls_url': stream_urls.get('hls'),
+            'ts_url': stream_urls.get('ts'),
             'wifi_rssi': wifi_rssi,
+            'lux': self.light_sensor.last_lux if self.light_sensor else None,
             'uptime': int(time.time() - self.start_time),
             'local_time': datetime.now().strftime('%H:%M:%S')
         }
@@ -230,7 +253,11 @@ def create_app(config: Dict[str, Any]) -> tuple:
     camera_config['rtsp_port'] = config['device'].get('rtsp_port', 8554)
     camera_config['hls_port'] = config['device'].get('hls_port', 8888)
     state.camera_manager = CameraManager(camera_config)
-    
+
+    # BH1750 light sensor -> SignalK via MQTT (independent of camera state)
+    state.light_sensor = LightSensorPublisher(config)
+    state.light_sensor.start()
+
     # =========================================================================
     # Routes
     # =========================================================================
@@ -278,6 +305,7 @@ def create_app(config: Dict[str, Any]) -> tuple:
         response_data = {
             'status': 'awake',
             'hls_url': stream_urls.get('hls'),
+            'ts_url': stream_urls.get('ts'),
         }
         if stream_urls.get('rtsp'):
             response_data['rtsp_url'] = stream_urls['rtsp']
@@ -351,6 +379,60 @@ def create_app(config: Dict[str, Any]) -> tuple:
         response.headers.add('Access-Control-Allow-Origin', '*')
         return response
     
+    @app.route('/live.ts', methods=['GET', 'OPTIONS'])
+    def live_ts():
+        """
+        Low-latency live MPEG-TS stream over chunked HTTP.
+
+        Played by mpegts.js in the browser (~0.5-1.5s latency). The
+        X-Accel-Buffering header disables buffering in nginx reverse
+        proxies along the way.
+        """
+        if request.method == 'OPTIONS':
+            response = jsonify({})
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+            return response, 204
+
+        if state.is_night_standby():
+            response = jsonify({'error': 'Night standby active'})
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response, 503
+
+        if not state.camera_manager.is_awake:
+            if not state.camera_manager.wake():
+                response = jsonify({'error': 'Camera wake failed'})
+                response.headers.add('Access-Control-Allow-Origin', '*')
+                return response, 503
+
+        state.touch_activity()
+        client_q = state.camera_manager.add_ts_client()
+
+        def generate():
+            import queue as _queue
+            chunk_count = 0
+            try:
+                while True:
+                    try:
+                        # 20s tolerance: camera sensor warmup takes 6-10s on Pi Zero
+                        chunk = client_q.get(timeout=20)
+                    except _queue.Empty:
+                        break  # Stream stalled (camera slept or pipeline died)
+                    if chunk is None:
+                        break  # End of stream
+                    chunk_count += 1
+                    if chunk_count % 64 == 0:
+                        state.touch_activity()
+                    yield chunk
+            finally:
+                state.camera_manager.remove_ts_client(client_q)
+
+        response = Response(generate(), mimetype='video/mp2t')
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Cache-Control', 'no-cache, no-store, must-revalidate')
+        response.headers.add('X-Accel-Buffering', 'no')  # Disable nginx proxy buffering
+        return response
+
     @app.route('/hls/<path:filename>', methods=['GET', 'OPTIONS'])
     def hls_stream(filename):
         """Serve HLS playlist and segment files directly from Flask."""
@@ -359,9 +441,12 @@ def create_app(config: Dict[str, Any]) -> tuple:
             response.headers.add('Access-Control-Allow-Origin', '*')
             response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
             return response, 204
-        
+
         from flask import send_from_directory
-        hls_dir = '/dev/shm/hls'
+        hls_dir = '/tmp/hls'
+
+        # HLS playback counts as viewer activity (prevents auto-sleep mid-watch)
+        state.touch_activity()
         
         try:
             response = send_from_directory(hls_dir, filename)
@@ -394,7 +479,6 @@ def create_app(config: Dict[str, Any]) -> tuple:
             # Handle reset
             if request.args.get('reset') == '1':
                 state.camera_manager.reset_settings()
-                logging.info("Camera settings reset to defaults")
             else:
                 # Apply individual settings
                 settings_map = {
@@ -416,9 +500,12 @@ def create_app(config: Dict[str, Any]) -> tuple:
                             value = int(request.args[param])
                             if min_val <= value <= max_val:
                                 state.camera_manager.set_setting(key, value)
-                                logging.info(f"Camera setting {key} = {value}")
                         except ValueError:
                             pass
+
+                # Resolution change (e.g. framesize=640x480)
+                if 'framesize' in request.args:
+                    state.camera_manager.set_resolution(request.args['framesize'])
         
         current_settings = state.camera_manager.get_settings()
         response = jsonify(current_settings)
@@ -495,6 +582,8 @@ def main():
     def signal_handler(signum, frame):
         logging.info("Shutdown signal received")
         state.running = False
+        if state.light_sensor:
+            state.light_sensor.stop()
         if state.camera_manager:
             state.camera_manager.sleep()
         sys.exit(0)
@@ -508,11 +597,14 @@ def main():
             host=config['device']['host'],
             port=config['device']['api_port'],
             debug=False,
-            use_reloader=False
+            use_reloader=False,
+            threaded=True  # Each live TS viewer holds a streaming connection
         )
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt received")
         state.running = False
+        if state.light_sensor:
+            state.light_sensor.stop()
         if state.camera_manager:
             state.camera_manager.sleep()
 

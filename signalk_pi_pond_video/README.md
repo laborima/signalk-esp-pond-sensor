@@ -11,14 +11,40 @@ A lightweight video streaming server for **Raspberry Pi Zero WH** with **Camera 
 - **Auto-sleep**: Configurable inactivity timeout to save power
 - **Night Standby**: Optional night mode to refuse connections during specified hours
 - **Camera Configuration**: Runtime adjustment of brightness, contrast, saturation, exposure, etc.
+- **BH1750FVI Light Sensor**: Ambient light (lux) published to SignalK via MQTT (`environment.outside.pond.illuminance`)
 - **Optimized for Pi Zero WH**: Low CPU usage, efficient memory management
 
 ## Hardware Requirements
 
 - **Raspberry Pi Zero WH** (Wireless with Header)
 - **Raspberry Pi Camera Module v3** (Standard 75° angle)
+- **BH1750FVI Light Sensor** (optional, I2C — GY-302 breakout)
 - **Power Supply**: 5V 2.5A micro-USB or GPIO
 - **WiFi Network**: 2.4 GHz for Pi Zero WH
+
+### BH1750FVI Wiring (I2C)
+
+| BH1750 (GY-302) | Pi Zero WH GPIO header |
+|-----------------|------------------------|
+| VCC             | Pin 1 (3.3V)           |
+| GND             | Pin 6 (GND)            |
+| SDA             | Pin 3 (GPIO2 / SDA1)   |
+| SCL             | Pin 5 (GPIO3 / SCL1)   |
+| ADDR            | Not connected or GND (address `0x23`) — 3.3V for `0x5C` |
+
+The GY-302 breakout has onboard pull-ups; no extra resistors needed. After
+enabling I2C (`sudo raspi-config nonint do_i2c 0`, done automatically by
+`install.sh`), verify with:
+
+```bash
+i2cdetect -y 1   # should show "23"
+```
+
+The sensor is read every 60s (configurable) and the lux value is published as
+a SignalK delta on the MQTT topic `signalk/delta` (same broker as the ESP32
+pond sensor), under the path `environment.outside.pond.illuminance`. The
+current value is also exposed as `lux` in the `/` status endpoint. See the
+`light_sensor` and `mqtt` sections of `config.yaml`.
 
 ## Installation
 

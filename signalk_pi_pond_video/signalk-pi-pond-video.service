@@ -7,6 +7,8 @@ Wants=network.target
 Type=simple
 User=pi
 Group=video
+# i2c group required for the BH1750 light sensor (/dev/i2c-1)
+SupplementaryGroups=i2c
 WorkingDirectory=/opt/signalk_pi_pond_video
 ExecStart=/usr/bin/python3 /opt/signalk_pi_pond_video/main.py
 Restart=always

@@ -57,6 +57,11 @@ else
     echo -e "${GREEN}  Camera detected${NC}"
 fi
 
+# Enable I2C for the BH1750 light sensor
+echo ""
+echo "Enabling I2C (BH1750 light sensor)..."
+sudo raspi-config nonint do_i2c 0 || echo -e "${YELLOW}Warning: Could not enable I2C automatically${NC}"
+
 # Update system
 echo ""
 echo "Updating package lists..."
@@ -71,6 +76,7 @@ sudo apt install -y \
     python3-yaml \
     libcamera-dev \
     libcamera-tools \
+    i2c-tools \
     ffmpeg  # Required for HLS streaming
 
 # Reload PATH after apt installs
@@ -81,6 +87,23 @@ echo ""
 echo "Installing Python packages..."
 sudo pip3 install --break-system-packages flask 2>/dev/null || \
 sudo pip3 install flask
+
+# smbus2 (BH1750 I2C) and paho-mqtt (SignalK deltas): apt first, pip fallback
+sudo apt install -y python3-smbus2 python3-paho-mqtt 2>/dev/null || {
+    sudo pip3 install --break-system-packages smbus2 paho-mqtt 2>/dev/null || \
+    sudo pip3 install smbus2 paho-mqtt
+}
+
+# Detect BH1750 on the I2C bus (0x23 default, 0x5C if ADDR pulled high)
+echo ""
+echo "Checking BH1750 light sensor..."
+if i2cdetect -y 1 2>/dev/null | grep -qE "(^| )(23|5c)( |$)"; then
+    echo -e "${GREEN}  BH1750 detected on I2C bus 1${NC}"
+else
+    echo -e "${YELLOW}Warning: BH1750 not detected on I2C bus 1${NC}"
+    echo "  Wiring: VCC->3.3V (pin 1), GND->pin 6, SDA->GPIO2 (pin 3), SCL->GPIO3 (pin 5)"
+    echo "  A reboot may be required after enabling I2C"
+fi
 
 # Create installation directory
 echo ""
@@ -93,6 +116,7 @@ echo ""
 echo "Copying application files..."
 cp -v "$SCRIPT_DIR/main.py" "$INSTALL_DIR/"
 cp -v "$SCRIPT_DIR/camera_manager.py" "$INSTALL_DIR/"
+cp -v "$SCRIPT_DIR/light_sensor.py" "$INSTALL_DIR/"
 cp -v "$SCRIPT_DIR/config.yaml" "$INSTALL_DIR/"
 
 # Set permissions
@@ -101,10 +125,10 @@ echo "Setting permissions..."
 chmod +x "$INSTALL_DIR/main.py"
 chmod +x "$INSTALL_DIR/camera_manager.py"
 
-# Add user to video group
+# Add user to video and i2c groups
 echo ""
-echo "Adding user to video group..."
-sudo usermod -a -G video "$USER_NAME"
+echo "Adding user to video and i2c groups..."
+sudo usermod -a -G video,i2c "$USER_NAME"
 
 # Create log directory
 echo ""

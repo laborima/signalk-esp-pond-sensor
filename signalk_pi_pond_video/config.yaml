@@ -40,6 +40,24 @@ power:
     # End hour (24h format)
     end_hour: 7
 
+# BH1750FVI light sensor (I2C)
+# Wiring: VCC->3.3V (pin 1), GND->pin 6, SDA->GPIO2 (pin 3), SCL->GPIO3 (pin 5)
+# ADDR->GND or floating = 0x23, ADDR->3.3V = 0x5C
+light_sensor:
+  enabled: true
+  i2c_bus: 1
+  address: "0x23"
+  # Publish interval in seconds
+  interval: 60
+  # SignalK path (distinct from the ESP32 sensor's environment.inside.pond.illuminance)
+  signalk_path: "environment.outside.pond.illuminance"
+
+# MQTT broker used to push SignalK deltas (same broker as the ESP32 sensor)
+mqtt:
+  host: "192.168.1.16"
+  port: 1883
+  topic: "signalk/delta"
+
 # Logging
 logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR
