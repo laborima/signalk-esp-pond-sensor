@@ -4,13 +4,9 @@
 
 🌍 *[English](README.md)*
 
-![POI Laboratory Logo](logo.png)
-
 # SignalK ESP32 Pond Sensor
 
 Système de monitoring de bassin extérieur / aquaponie basé sur ESP32, avec affichage TFT local et publication vers SignalK via MQTT.
-
-![POI Laboratory Badge](badge.png)
 
 Ce projet contient trois sous-projets :
 

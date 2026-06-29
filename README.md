@@ -4,19 +4,17 @@
 
 🌍 *[Français](README.fr.md)*
 
-![POI Laboratory Logo](logo.png)
-
 # SignalK ESP32 Pond Sensor
 
 ESP32-based outdoor pond / aquaponics monitoring system with local TFT display and SignalK publishing via MQTT.
-
-![POI Laboratory Badge](badge.png)
 
 This project contains three sub-projects:
 
 - **signalk_esp_pond_sensor/** — Main ESP32 firmware for sensors (Arduino C++)
 - **signalk_esp_pond_video/** — ESP32-CAM firmware for video streaming (Arduino C++)
 - **signalk-poi-lab/** — SignalK monitoring webapp (Next.js)
+
+
 
 ## Architecture
 
