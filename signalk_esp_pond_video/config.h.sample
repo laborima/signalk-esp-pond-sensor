@@ -16,21 +16,31 @@
 /* WS_PORT is defined in the .ino as 82 – override here if needed */
 
 /* Camera auto-sleep: turn off camera after this many ms without active stream */
-#define CAMERA_SLEEP_TIMEOUT_MS  60000
+#define CAMERA_SLEEP_TIMEOUT_MS  600000
 
 /* Night standby: refuse wake requests between these hours */
 #define STANDBY_HOUR_START 22
 #define STANDBY_HOUR_END    6
 
 /* JPEG quality (4-63, lower = better quality, more bandwidth) */
-#define JPEG_QUALITY  10
+#define JPEG_QUALITY  4
 
 /* Frame size: FRAMESIZE_QVGA=4, FRAMESIZE_VGA=8, FRAMESIZE_SVGA=6, FRAMESIZE_UXGA=10 */
-#define FRAME_SIZE    FRAMESIZE_SVGA
+#define FRAME_SIZE    FRAMESIZE_UXGA
 
 /* Camera default settings – adjustable live via POST /config */
-#define CAM_BRIGHTNESS   2   /* -2 to 2 */
-#define CAM_CONTRAST     2   /* -2 to 2 */
-#define CAM_SATURATION   2   /* -2 to 2 */
+#define CAM_BRIGHTNESS  -1   /* -2 to 2 */
+#define CAM_CONTRAST     1   /* -2 to 2 */
+#define CAM_SATURATION   0   /* -2 to 2 */
 #define CAM_AE_LEVEL     2   /* -2 to 2 */
 #define CAM_GAINCEILING  6   /* 0 to 6  */
+
+/* Battery monitoring */
+/* The XIAO ESP32S3 does not have a dedicated internal ADC pin connected to the battery pad.
+ * To measure battery voltage, you must physically connect the battery positive terminal 
+ * to a GPIO pin (e.g., A0/GPIO1) through a voltage divider (e.g., 200k/200k or 100k/100k) 
+ * so the voltage stays under 3.3V.
+ * If you haven't wired this, set BATTERY_PIN to -1 */
+#define BATTERY_PIN      -1
+/* Voltage divider ratio. If using two equal resistors (e.g. 100k and 100k), ratio is 2.0 */
+#define BATTERY_VOLTAGE_DIVIDER 2.0

@@ -1,7 +1,7 @@
 /**
  * SignalK ESP Pond Video
  *
- * Firmware for Seeed Studio XIAO ESP32-S3 Sense with OV2640 camera.
+ * Firmware for Seeed Studio XIAO ESP32-S3 Sense with OV5640 AF camera.
  * Camera sleeps by default to save power. Wakes on HTTP request from
  * POI Laboratory dashboard, streams video via WebSocket (low-latency)
  * or MJPEG fallback, then auto-sleeps after a configurable inactivity timeout.
@@ -20,9 +20,16 @@
  *   - LED status: OFF = sleeping, ON = camera active, blink = streaming
  *
  * Hardware: Seeed Studio XIAO ESP32-S3 Sense
- *   - OV2640 camera module
+ *   - OV5640 AF camera module (5MP, autofocus)
  *   - 8 MB PSRAM, 8 MB Flash
  *   - Wi-Fi 2.4 GHz 802.11n
+ *
+ * OV5640 AF notes:
+ *   - Requires XCLK at 24 MHz for optimal performance (20 MHz also works)
+ *   - QSXGA (2592x1944) only reliable with PSRAM + fb_count=1
+ *   - Autofocus triggered via set_reg (0x3022/0x3023) after init
+ *   - set_gainceiling supports values 0–6 (same as OV2640)
+ *   - set_sharpness available (-3 to +3)
  *
  * Dependencies (Arduino Library Manager):
  *   - arduinoWebSockets by Markus Sattler (WebSockets)
@@ -31,6 +38,7 @@
  */
 
 #include <WiFi.h>
+#include <driver/ledc.h>   // for OV5640 XCLK pre-warm
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <time.h>
@@ -39,6 +47,31 @@
 #include <esp_wifi.h>
 #include <esp_pm.h>
 #include "config.h"
+
+/* ================= FORCED CAMERA DEFAULTS ================= */
+#undef CAMERA_SLEEP_TIMEOUT_MS
+#define CAMERA_SLEEP_TIMEOUT_MS  600000
+
+// OV5640 AF @ QSXGA: quality 10 avoids PSRAM overflow at max resolution
+// (quality 4 produces frames >400 KB which can exceed fb_size at QSXGA)
+#undef JPEG_QUALITY
+#define JPEG_QUALITY  10
+
+// QSXGA = 2592x1944 – maximum native resolution of OV5640
+#undef FRAME_SIZE
+#define FRAME_SIZE    FRAMESIZE_QSXGA
+
+#undef CAM_BRIGHTNESS
+#define CAM_BRIGHTNESS  -1
+
+#undef CAM_CONTRAST
+#define CAM_CONTRAST    1
+
+#undef CAM_SATURATION
+#define CAM_SATURATION  0
+
+// OV5640 AF: sharpness setting (-3 to +3). 1 = slight sharpening.
+#define CAM_SHARPNESS   1
 
 /* ================= NTP CONFIG ================= */
 #define NTP_SERVER   "pool.ntp.org"
@@ -57,6 +90,8 @@
 #define LED_PIN 21
 
 /* ================= CAMERA PINS (XIAO ESP32-S3 Sense) ================= */
+// Pin mapping is identical between OV2640 and OV5640 on the XIAO ESP32-S3 Sense
+// connector – no hardware changes required when swapping sensors.
 #define PWDN_GPIO_NUM  -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM  10
@@ -111,12 +146,14 @@ int camFrameSize   = FRAME_SIZE;
 int camVflip       = 1;
 int camHmirror     = 0;
 int camDenoise     = 1;
+int camSharpness   = CAM_SHARPNESS;  // OV5640 AF only
+
+bool ntpSynced = false;
 
 /* ================= WIFI STATE ================= */
 unsigned long lastWifiCheck = 0;
 unsigned long wifiRetryDelay = WIFI_RETRY_BASE_MS;
 int wifiConsecutiveFailures = 0;
-bool ntpSynced = false;
 
 enum WifiState {
     WIFI_STATE_IDLE,
@@ -146,6 +183,7 @@ int getCurrentHour() {
  * Checks whether the camera should refuse wake requests (night mode).
  */
 bool isStandbyTime() {
+    if (!ntpSynced) return false;
     int hour = getCurrentHour();
     if (hour < 0) return false;
     if (STANDBY_HOUR_START > STANDBY_HOUR_END) {
@@ -172,10 +210,51 @@ void ledBlink(int count, int delayMs) {
     }
 }
 
+/* ================= OV5640 AF HELPERS ================= */
+/**
+ * Triggers a single continuous-autofocus cycle on the OV5640 AF.
+ *
+ * The OV5640 AF firmware must be loaded by esp32-camera at init time.
+ * We write directly to the AF command registers via set_reg:
+ *   0x3022 = AF command register  (0x04 = release, 0x03 = single trigger)
+ *   0x3023 = AF status register   (poll for 0x10 = idle/done)
+ *
+ * Call this after applyCameraSettings() or on demand via /config?af=1.
+ */
+void triggerAutofocus() {
+    sensor_t *s = esp_camera_sensor_get();
+    if (s == NULL) return;
+
+    // Release any previous AF lock
+    s->set_reg(s, 0x3022, 0xFF, 0x08);
+    delay(10);
+    // Trigger single-shot AF
+    s->set_reg(s, 0x3022, 0xFF, 0x03);
+    Serial.println("[CAM] AF triggered");
+
+    // Optional: poll for completion (max ~500 ms)
+    unsigned long start = millis();
+    while (millis() - start < 500) {
+        int status = s->get_reg(s, 0x3023, 0xFF);
+        if (status == 0x10) {
+            Serial.println("[CAM] AF done (focused)");
+            break;
+        }
+        delay(20);
+    }
+}
+
 /* ================= CAMERA INIT / DEINIT ================= */
 /**
- * Applies current runtime camera settings to the OV2640 sensor.
+ * Applies current runtime camera settings to the OV5640 AF sensor.
  * Called after init and after any /config change.
+ *
+ * OV5640 differences vs OV2640:
+ *   - set_sharpness() is supported (-3 to +3)
+ *   - set_denoise() range is the same (0-1)
+ *   - set_gainceiling() range is the same (0-6)
+ *   - AWB/AEC controls work identically
+ *   - AF must be re-triggered after a framesize change
  */
 void applyCameraSettings() {
     sensor_t *s = esp_camera_sensor_get();
@@ -184,6 +263,7 @@ void applyCameraSettings() {
     s->set_brightness(s, camBrightness);
     s->set_contrast(s, camContrast);
     s->set_saturation(s, camSaturation);
+    s->set_sharpness(s, camSharpness);        // OV5640 AF: hardware sharpening
     s->set_whitebal(s, 1);
     s->set_awb_gain(s, 1);
     s->set_wb_mode(s, 0);
@@ -204,15 +284,50 @@ void applyCameraSettings() {
     s->set_framesize(s, (framesize_t)camFrameSize);
 
     Serial.println("[CAM] Settings applied");
+
+    // Re-trigger AF after any settings change (especially framesize)
+    triggerAutofocus();
 }
 
 /**
- * Initializes the OV2640 camera with PSRAM-optimized settings.
+ * Initializes the OV5640 AF camera with PSRAM-optimized settings.
+ *
+ * Key differences vs OV2640 init:
+ *   - xclk_freq_hz = 20 MHz (OV5640 datasheet: 6–27 MHz, 24 MHz nominal)
+ *   - fb_count = 1 at QSXGA to avoid PSRAM exhaustion (frames ~150–400 KB)
+ *   - fb_location = CAMERA_FB_IN_PSRAM required for QSXGA
  *
  * @return true if camera initialized successfully
  */
 bool initCamera() {
     if (cameraInitialized) return true;
+
+    // ---- OV5640 pre-warm ------------------------------------------------
+    // The OV5640 needs XCLK running for ~5 ms before its internal PLL locks
+    // and the SCCB (I2C) bus becomes responsive. We start LEDC manually,
+    // wait, then let esp_camera_init() reconfigure it with the same settings.
+    // Without this delay the I2C probe fires before the sensor is ready,
+    // causing "probe device timeout" and ESP_ERR_NOT_SUPPORTED (0x106).
+    ledc_timer_config_t ledc_timer_cfg = {
+        .speed_mode       = LEDC_LOW_SPEED_MODE,
+        .duty_resolution  = LEDC_TIMER_1_BIT,
+        .timer_num        = LEDC_TIMER_0,
+        .freq_hz          = 20000000,
+        .clk_cfg          = LEDC_AUTO_CLK
+    };
+    ledc_timer_config(&ledc_timer_cfg);
+
+    ledc_channel_config_t ledc_ch_cfg = {
+        .gpio_num   = XCLK_GPIO_NUM,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel    = LEDC_CHANNEL_0,
+        .timer_sel  = LEDC_TIMER_0,
+        .duty       = 1,
+        .hpoint     = 0
+    };
+    ledc_channel_config(&ledc_ch_cfg);
+    delay(10);  // Let OV5640 PLL stabilise before SCCB probe
+    // ---------------------------------------------------------------------
 
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
@@ -233,21 +348,27 @@ bool initCamera() {
     config.pin_sccb_scl = SIOC_GPIO_NUM;
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
-    config.xclk_freq_hz = 16000000;
+
+    // OV5640: 20 MHz XCLK (nominal 24 MHz; 20 MHz is stable on XIAO ESP32-S3)
+    // OV2640 used 16 MHz – do NOT use 16 MHz with OV5640 (unstable at QSXGA)
+    config.xclk_freq_hz = 20000000;
+
     config.pixel_format = PIXFORMAT_JPEG;
     config.grab_mode = CAMERA_GRAB_LATEST;
 
     if (psramFound()) {
-        Serial.println("[CAM] PSRAM detected, using high resolution");
-        config.frame_size = FRAME_SIZE;
-        config.jpeg_quality = JPEG_QUALITY;
-        config.fb_count = 2;
+        Serial.println("[CAM] PSRAM detected – OV5640 QSXGA mode");
+        config.frame_size  = FRAMESIZE_QSXGA;  // 2592x1944
+        config.jpeg_quality = JPEG_QUALITY;     // 10 = safe for QSXGA + PSRAM
+        // fb_count=1 at QSXGA: double-buffering at max res risks OOM in PSRAM.
+        // CAMERA_GRAB_LATEST already minimises latency with 1 buffer.
+        config.fb_count    = 1;
         config.fb_location = CAMERA_FB_IN_PSRAM;
     } else {
-        Serial.println("[CAM] No PSRAM, using low resolution");
-        config.frame_size = FRAMESIZE_QVGA;
+        Serial.println("[CAM] No PSRAM – falling back to SVGA");
+        config.frame_size  = FRAMESIZE_SVGA;
         config.jpeg_quality = 20;
-        config.fb_count = 1;
+        config.fb_count    = 1;
         config.fb_location = CAMERA_FB_IN_DRAM;
     }
 
@@ -257,9 +378,9 @@ bool initCamera() {
         return false;
     }
 
-    applyCameraSettings();
+    applyCameraSettings();   // also triggers first AF cycle
     cameraInitialized = true;
-    Serial.println("[CAM] Initialized successfully");
+    Serial.println("[CAM] OV5640 AF initialized successfully");
     return true;
 }
 
@@ -329,6 +450,25 @@ void touchActivity() {
     lastActivityTime = millis();
 }
 
+/* ================= BATTERY HELPERS ================= */
+float getBatteryVoltage() {
+#ifdef BATTERY_PIN
+    if (BATTERY_PIN < 0) return 0.0;
+
+    int adcValue = analogRead(BATTERY_PIN);
+    float pinVoltage = (adcValue / 4095.0) * 3.3;
+    return pinVoltage * BATTERY_VOLTAGE_DIVIDER;
+#else
+    return 0.0;
+#endif
+}
+
+int getBatteryPercentage(float voltage) {
+    if (voltage >= 4.2) return 100;
+    if (voltage <= 3.0) return 0;
+    return (int)((voltage - 3.0) / (4.2 - 3.0) * 100.0);
+}
+
 /* ================= HTTP HANDLERS ================= */
 /**
  * Handles the root endpoint. Returns device status as JSON.
@@ -342,11 +482,15 @@ void handleRoot() {
                  timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
     }
 
+    float batVoltage = getBatteryVoltage();
+    int batPercent = batVoltage > 0 ? getBatteryPercentage(batVoltage) : -1;
+
     char json[512];
     snprintf(json, sizeof(json),
         "{\"device\":\"%s\",\"camera_awake\":%s,\"camera_ready\":%s,\"standby\":%s,\"ntp_synced\":%s,"
         "\"local_time\":\"%s\",\"streaming\":%s,\"ws_clients\":%d,\"wifi_rssi\":%d,\"uptime\":%lu,"
-        "\"psram\":%s,\"free_heap\":%u,\"stream_url\":\"http://%s:%d/stream\",\"ws_url\":\"ws://%s:%d/\"}",
+        "\"psram\":%s,\"free_heap\":%u,\"battery_voltage\":%.2f,\"battery_percentage\":%d,"
+        "\"stream_url\":\"http://%s:%d/stream\",\"ws_url\":\"ws://%s:%d/\"}",
         DEVICE_NAME,
         cameraAwake ? "true" : "false",
         cameraInitialized ? "true" : "false",
@@ -359,6 +503,7 @@ void handleRoot() {
         millis() / 1000,
         psramFound() ? "true" : "false",
         ESP.getFreeHeap(),
+        batVoltage, batPercent,
         WiFi.localIP().toString().c_str(), STREAM_PORT,
         WiFi.localIP().toString().c_str(), WS_PORT
     );
@@ -411,7 +556,7 @@ void mjpegStreamTask(void *pvParameters)
 {
     MjpegClientArgs *args = static_cast<MjpegClientArgs *>(pvParameters);
     WiFiClient client = args->client;
-    client.setTimeout(2); // 2 seconds timeout for writes to prevent watchdog trigger on slow clients
+    client.setTimeout(2);
     delete args;
 
     activeStreamClients++;
@@ -441,8 +586,8 @@ void mjpegStreamTask(void *pvParameters)
         }
 
         char headerBuf[128];
-        size_t headerLen = snprintf(headerBuf, sizeof(headerBuf), 
-            "%sContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", 
+        size_t headerLen = snprintf(headerBuf, sizeof(headerBuf),
+            "%sContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n",
             STREAM_BOUNDARY, fb->len);
 
         client.write((const uint8_t*)headerBuf, headerLen);
@@ -546,12 +691,20 @@ void handleCors() {
  * POST /config – applies new settings from query params or JSON body.
  *
  * Supported params: brightness, contrast, saturation, ae_level,
- *                   gainceiling, quality, framesize, vflip, hmirror, denoise
+ *                   gainceiling, quality, framesize, vflip, hmirror,
+ *                   denoise, sharpness (OV5640 AF only), af (trigger AF: 1)
  */
 void handleConfig() {
     streamServer.sendHeader("Access-Control-Allow-Origin", "*");
 
     if (streamServer.method() == HTTP_POST) {
+        // Trigger autofocus on demand without changing other settings
+        if (streamServer.hasArg("af")) {
+            if (cameraInitialized) triggerAutofocus();
+            streamServer.send(200, "application/json", "{\"af\":\"triggered\"}");
+            return;
+        }
+
         if (streamServer.hasArg("reset")) {
             camBrightness  = CAM_BRIGHTNESS;
             camContrast    = CAM_CONTRAST;
@@ -563,6 +716,7 @@ void handleConfig() {
             camVflip       = 1;
             camHmirror     = 0;
             camDenoise     = 1;
+            camSharpness   = CAM_SHARPNESS;
             if (cameraInitialized) applyCameraSettings();
             Serial.println("[CONFIG] Reset to defaults");
         } else {
@@ -588,6 +742,7 @@ void handleConfig() {
             applyInt("vflip",       camVflip,        0, 1);
             applyInt("hmirror",     camHmirror,      0, 1);
             applyInt("denoise",     camDenoise,      0, 1);
+            applyInt("sharpness",   camSharpness,   -3, 3);  // OV5640 AF only
 
             if (changed && cameraInitialized) {
                 applyCameraSettings();
@@ -595,12 +750,12 @@ void handleConfig() {
         }
     }
 
-    char json[256];
+    char json[300];
     snprintf(json, sizeof(json),
         "{\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,\"ae_level\":%d,\"gainceiling\":%d,"
-        "\"quality\":%d,\"framesize\":%d,\"vflip\":%d,\"hmirror\":%d,\"denoise\":%d}",
+        "\"quality\":%d,\"framesize\":%d,\"vflip\":%d,\"hmirror\":%d,\"denoise\":%d,\"sharpness\":%d}",
         camBrightness, camContrast, camSaturation, camAeLevel, camGainCeiling,
-        camQuality, camFrameSize, camVflip, camHmirror, camDenoise
+        camQuality, camFrameSize, camVflip, camHmirror, camDenoise, camSharpness
     );
 
     streamServer.send(200, "application/json", json);
@@ -610,11 +765,6 @@ void handleConfig() {
 /**
  * WebSocket event handler.
  * Tracks connected clients; streaming is driven from the loop task.
- *
- * @param num    Client number
- * @param type   Event type
- * @param payload Event payload
- * @param length  Payload length
  */
 void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
     switch (type) {
@@ -638,9 +788,7 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
 
 /**
  * Broadcasts one JPEG frame to all connected WebSocket clients.
- * Uses adaptive timing: waits at least WS_MIN_FRAME_MS between frames,
- * and skips if the previous broadcast took longer than WS_MAX_FRAME_MS
- * (network congestion). This prevents frame queue buildup.
+ * Uses adaptive timing to prevent frame queue buildup.
  */
 void wsBroadcastFrame() {
     if (wsClientCount == 0) return;
@@ -691,7 +839,7 @@ void handleWifi() {
         if (!ntpSynced) {
             configTzTime(TZ_PARIS, NTP_SERVER);
             struct tm timeinfo;
-            if (getLocalTime(&timeinfo, 0)) { // non-blocking check
+            if (getLocalTime(&timeinfo, 0)) {
                 ntpSynced = true;
                 Serial.println("[NTP] Time synced");
             }
@@ -753,7 +901,6 @@ void handleWifi() {
 /* ================= AUTO-SLEEP ================= */
 /**
  * Puts the camera to sleep if no activity for CAMERA_SLEEP_TIMEOUT_MS.
- * Counts both MJPEG clients and WebSocket clients.
  */
 void handleAutoSleep() {
     if (!cameraAwake) return;
@@ -768,7 +915,7 @@ void handleAutoSleep() {
 /* ================= SETUP ================= */
 void setup() {
     Serial.begin(115200);
-    Serial.println("[BOOT] XIAO ESP32-S3 Sense starting");
+    Serial.println("[BOOT] XIAO ESP32-S3 Sense starting (OV5640 AF)");
     Serial.printf("[BOOT] PSRAM: %s (%d bytes)\n",
                   psramFound() ? "YES" : "NO",
                   psramFound() ? ESP.getPsramSize() : 0);
@@ -790,9 +937,8 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(false);
 
-    // Initial wifi connect is now handled by the state machine in loop()
     wifiState = WIFI_STATE_WAIT_RETRY;
-    wifiRetryDelay = 0; // Trigger immediately
+    wifiRetryDelay = 0;
     lastWifiCheck = millis();
 
     streamServer.on("/", HTTP_GET, handleRoot);
@@ -818,7 +964,7 @@ void setup() {
     Serial.printf("[WS] WebSocket server started on port %d\n", WS_PORT);
 
     ledOff();
-    Serial.println("[BOOT] Setup complete – camera OFF, awaiting wake request");
+    Serial.println("[BOOT] Setup complete – OV5640 AF sleeping, awaiting wake request");
 }
 
 /* ================= LOOP ================= */
@@ -834,6 +980,6 @@ void loop() {
     } else if (wsClientCount == 0 && activeStreamClients == 0) {
         delay(2);
     } else {
-        delay(1); // Yield CPU when awake and streaming
+        delay(1);
     }
 }
