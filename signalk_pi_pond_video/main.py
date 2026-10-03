@@ -503,6 +503,20 @@ def create_app(config: Dict[str, Any]) -> tuple:
                         except ValueError:
                             pass
 
+                # Focus controls (imx708): modes/ranges are strings,
+                # lens_position is a float in dioptres (0=infinity .. 10≈10cm)
+                if request.args.get('focus_mode') in ('continuous', 'auto', 'manual'):
+                    state.camera_manager.set_setting('focus_mode', request.args['focus_mode'])
+                if request.args.get('autofocus_range') in ('normal', 'macro', 'full'):
+                    state.camera_manager.set_setting('autofocus_range', request.args['autofocus_range'])
+                if 'lens_position' in request.args:
+                    try:
+                        lens = float(request.args['lens_position'])
+                        if 0.0 <= lens <= 10.0:
+                            state.camera_manager.set_setting('lens_position', lens)
+                    except ValueError:
+                        pass
+
                 # Resolution change (e.g. framesize=640x480)
                 if 'framesize' in request.args:
                     state.camera_manager.set_resolution(request.args['framesize'])

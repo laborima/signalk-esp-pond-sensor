@@ -22,12 +22,23 @@ camera:
   bitrate: 700000
   # H.264 CRF quality: 18-28 range, lower = better quality (22 is good balance)
   quality: 22
+  # Focus mode (Camera Module v3 / imx708 autofocus):
+  #   continuous = AF hunts constantly (blurs fixed scenes - avoid)
+  #   auto       = AF focuses once at startup then locks
+  #   manual     = fixed lens at lens_position (recommended for a static pond)
+  focus_mode: "continuous"
+  # Manual lens position in dioptres: 0 = infinity (far/pond),
+  # higher = closer (~10 = 10 cm minimum focus). Only used in manual mode.
+  lens_position: 10.0
+  # AF scan range for auto/continuous: normal, macro, full
+  # ('full' lets the one-shot autofocus lock onto close subjects too)
+  autofocus_range: "full"
   # Camera rotation: 0, 90, 180, 270
   rotation: 180
   # Horizontal flip
   hflip: false
   # Vertical flip
-  vflip: true
+  vflip: false
 
 power:
   # Auto-sleep after inactivity (seconds)

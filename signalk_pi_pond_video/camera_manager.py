@@ -50,8 +50,18 @@ class CameraManager:
         'bitrate': 2000000,  # 2 Mbps for Pi Zero
         'rotation': 180,
         'hflip': 0,
-        'vflip': 1,
+        'vflip': 0,
         'framerate': 25,
+        # Focus (Camera Module v3 / imx708 autofocus):
+        #   'continuous' = AF hunts constantly (bad for a fixed scene),
+        #   'auto'       = AF runs once at start then locks,
+        #   'manual'     = fixed lens at `lens_position` dioptres
+        #                  (0 = infinity, higher = closer; ~10 ≈ 10 cm min focus)
+        'focus_mode': 'continuous',
+        'lens_position': 10.0,
+        # AF scan range for 'auto'/'continuous' modes: normal, macro, full
+        # ('full' covers close subjects like a jar through to infinity)
+        'autofocus_range': 'normal',
     }
     
     def __init__(self, config: Dict[str, Any]):
@@ -105,8 +115,9 @@ class CameraManager:
     
     def _apply_config_settings(self):
         """Apply initial settings from configuration."""
-        for key in ['brightness', 'contrast', 'saturation', 'sharpness', 
-                    'exposure', 'iso', 'quality', 'bitrate', 'framerate']:
+        for key in ['brightness', 'contrast', 'saturation', 'sharpness',
+                    'exposure', 'iso', 'quality', 'bitrate', 'framerate',
+                    'focus_mode', 'lens_position', 'autofocus_range']:
             if key in self.config:
                 self._settings[key] = self.config[key]
         
@@ -203,6 +214,23 @@ class CameraManager:
                 # ISO 100 = auto gain; above that, fixed gain iso/100
                 if iso > 100:
                     rpicam_cmd.extend(['--gain', f"{iso / 100:.1f}"])
+
+                # Focus control (imx708). 'manual' avoids the constant autofocus
+                # hunting that blurs a fixed scene; lens_position is in dioptres
+                # (0 = infinity, higher = closer subject).
+                focus_mode = self._settings.get('focus_mode', 'continuous')
+                af_range = self._settings.get('autofocus_range', 'normal')
+                if focus_mode == 'continuous':
+                    rpicam_cmd.extend(['--autofocus-mode', 'continuous',
+                                       '--autofocus-range', str(af_range)])
+                elif focus_mode == 'auto':
+                    rpicam_cmd.extend(['--autofocus-mode', 'auto',
+                                       '--autofocus-range', str(af_range)])
+                else:  # manual (fixed focus)
+                    lens_position = self._settings.get('lens_position', 0.0)
+                    rpicam_cmd.extend([
+                        '--autofocus-mode', 'manual',
+                        '--lens-position', f"{float(lens_position):.2f}"])
 
                 logging.info(f"Starting rpicam-vid: {' '.join(rpicam_cmd)}")
                 
@@ -520,7 +548,8 @@ class CameraManager:
     # NOTE: 'quality' is absent on purpose — it only affects JPEG snapshots.
     RESTART_SETTINGS = ['framerate', 'bitrate', 'rotation', 'hflip', 'vflip',
                         'brightness', 'contrast', 'saturation', 'sharpness',
-                        'exposure', 'iso']
+                        'exposure', 'iso',
+                        'focus_mode', 'lens_position', 'autofocus_range']
 
     def _schedule_restart(self, delay: float = 1.5):
         """

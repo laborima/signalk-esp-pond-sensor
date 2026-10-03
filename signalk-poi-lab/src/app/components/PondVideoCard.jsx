@@ -830,6 +830,29 @@ export default function PondVideoCard({ streamUrl }) {
                                     Miroir H
                                 </label>
                             </div>
+                            {deviceType === "pi" && (
+                                <div className="col-span-2 pt-3 border-t border-poi-sage/10">
+                                    <label className="flex items-center gap-2 text-xs text-poi-text/70 cursor-pointer">
+                                        <input type="checkbox"
+                                            checked={(camSettings.focus_mode ?? "continuous") !== "manual"}
+                                            onChange={e => applyCamSetting("focus_mode", e.target.checked ? "continuous" : "manual")}
+                                            className="accent-poi-ocean" />
+                                        Autofocus
+                                    </label>
+                                    {(camSettings.focus_mode ?? "continuous") === "manual" && (
+                                        <label className="flex flex-col gap-1 mt-2">
+                                            <span className="text-xs text-poi-text/60">
+                                                Mise au point <span className="font-mono text-poi-ocean">{camSettings.lens_position ?? 10}</span>
+                                                <span className="text-poi-text/40"> (0 = loin · 10 = proche)</span>
+                                            </span>
+                                            <input type="range" min={0} max={10} step={0.5}
+                                                value={camSettings.lens_position ?? 10}
+                                                onChange={e => applyCamSetting("lens_position", e.target.value)}
+                                                className="w-full accent-poi-ocean" />
+                                        </label>
+                                    )}
+                                </div>
+                            )}
                             <div className="col-span-2 pt-2 border-t border-poi-sage/10 flex justify-end">
                                 <button
                                     onClick={async () => {
